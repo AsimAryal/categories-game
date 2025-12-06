@@ -11,8 +11,10 @@ class MessageType(str, enum.Enum):
     SUBMIT_SCORES = "SUBMIT_SCORES"
     NEXT_ROUND = "NEXT_ROUND"
     END_GAME = "END_GAME"
+    GET_GAMES = "GET_GAMES" # Client requests list
     # SERVER -> CLIENT
     LOBBY_UPDATE = "LOBBY_UPDATE"
+    GAMES_LIST = "GAMES_LIST" # Server sends list
     ROUND_START = "ROUND_START"
     OPPONENT_SUBMITTED = "OPPONENT_SUBMITTED"
     ROUND_ENDED = "ROUND_ENDED"  # Transition to scoring

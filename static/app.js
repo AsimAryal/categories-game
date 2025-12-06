@@ -101,6 +101,8 @@ function connect() {
         showToast("Connected to server", "success");
         document.getElementById('status-bar').classList.add('hidden');
         console.log("Connected to WS");
+        // Request games list
+        send("GET_GAMES", {});
     };
 
     socket.onclose = () => {
@@ -131,6 +133,9 @@ function handleMessage(msg) {
         case "LOBBY_UPDATE":
             showScreen('waiting');
             updateLobby(payload);
+            break;
+        case "GAMES_LIST":
+            renderGamesList(payload.games);
             break;
         case "ROUND_START":
             startRound(payload);
@@ -204,6 +209,37 @@ function updateLobby(payload) {
         else waitingMsg.innerText = "Waiting for host to start...";
     }
 }
+
+function renderGamesList(games) {
+    const list = document.getElementById('games-list');
+    const container = document.getElementById('games-list-container');
+    list.innerHTML = '';
+
+    if (games.length === 0) {
+        container.classList.add('hidden');
+        return;
+    }
+
+    container.classList.remove('hidden');
+    games.forEach(game => {
+        const div = document.createElement('div');
+        div.className = 'game-item';
+        div.innerHTML = `
+            <div class="game-info">
+                <span class="game-host">${game.host_name}'s Game</span>
+                <span style="color:#888; font-size:12px;">(${game.player_count}/2)</span>
+            </div>
+            <button style="width: auto; padding: 5px 10px; font-size: 12px;">Join</button>
+        `;
+        div.addEventListener('click', () => {
+            document.getElementById('join-code').value = game.code;
+            // Use yellow fade to highlight?
+            document.getElementById('join-code').focus();
+        });
+        list.appendChild(div);
+    });
+}
+
 
 function startRound(roundData) {
     Sound.start();

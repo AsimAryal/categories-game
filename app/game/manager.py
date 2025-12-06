@@ -95,6 +95,25 @@ class GameManager:
             
         return new_round
 
+    def get_open_rooms(self) -> List[Dict]:
+        """
+        Returns a list of rooms that are joinable (LOBBY state and < 2 players).
+        """
+        open_rooms = []
+        for code, room in self.rooms.items():
+            if room.state == GameState.LOBBY and len(room.players) < 2:
+                # Find host name
+                host_name = "Unknown"
+                if room.host_id and room.host_id in room.players:
+                    host_name = room.players[room.host_id].name
+                
+                open_rooms.append({
+                    "code": code,
+                    "host_name": host_name,
+                    "player_count": len(room.players)
+                })
+        return open_rooms
+
     def submit_answers(self, room_code: str, player_id: str, answers: Dict[str, str]) -> Dict:
         """
         Returns status info: 

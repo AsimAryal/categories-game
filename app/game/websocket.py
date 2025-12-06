@@ -30,6 +30,21 @@ class ConnectionManager:
                 except:
                     pass
 
+    async def broadcast_games_list(self):
+        rooms = game_manager.get_open_rooms()
+        message = {
+            "type": MessageType.GAMES_LIST,
+            "payload": {"games": rooms}
+        }
+        # Broadcast to ALL connected clients (lobby and in-game, simpler)
+        # OR just iterate active_connections
+        for socket in self.active_connections.values():
+            try:
+                await socket.send_json(message)
+            except:
+                pass
+
+
 manager = ConnectionManager()
 
 async def handle_websocket(websocket: WebSocket):
@@ -100,6 +115,17 @@ async def handle_websocket(websocket: WebSocket):
                                 "rush_seconds": room.rush_seconds
                             } 
                         })
+
+                # --- GET GAMES ---
+                elif msg_type == MessageType.GET_GAMES:
+                    rooms = game_manager.get_open_rooms()
+                    await manager.send_personal_message(
+                        {
+                            "type": MessageType.GAMES_LIST,
+                            "payload": {"games": rooms}
+                        },
+                        websocket
+                    )
 
                 elif msg_type == MessageType.SUBMIT_ANSWERS:
                     if not room_code or not player_id: continue
@@ -185,6 +211,8 @@ async def handle_websocket(websocket: WebSocket):
             if room_code and room_code in game_manager.rooms:
                 room = game_manager.rooms[room_code]
                 await _broadcast_room_state(room)
+            
+            await manager.broadcast_games_list()
 
 async def _broadcast_to_room(room, message):
     player_ids = list(room.players.keys())

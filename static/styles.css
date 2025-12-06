@@ -36,6 +36,22 @@ body.dark-mode .scoring-row {
     color: var(--text-color);
 }
 
+body.dark-mode .answer-block {
+    background-color: #0f3460;
+    color: var(--text-color);
+}
+
+body.dark-mode .game-item {
+    background-color: #0f3460;
+    border-color: #0f3460;
+    color: var(--text-color);
+}
+
+body.dark-mode .game-item:hover {
+    background-color: #1565c0;
+    border-color: var(--primary-color);
+}
+
 body.dark-mode .category-label {
     color: #e6e6e6;
     /* High contrast for labels */
@@ -177,6 +193,33 @@ button:disabled {
     color: #888;
     font-weight: bold;
     position: relative;
+}
+
+.game-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    margin-bottom: 8px;
+    background: #f9f9f9;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.game-item:hover {
+    background: #e3f2fd;
+    border-color: var(--primary-color);
+}
+
+.game-info {
+    font-size: 14px;
+}
+
+.game-host {
+    font-weight: bold;
+    color: var(--primary-color);
 }
 
 /* WAITING SCREEN */
