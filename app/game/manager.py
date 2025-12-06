@@ -61,7 +61,19 @@ class GameManager:
             return None
         
         round_num = len(room.history) + 1
-        letter = random.choice(self.LETTERS).upper()
+        
+        # Letter selection logic:
+        # Filter out used letters
+        available_letters = [l for l in self.LETTERS if l not in room.used_letters]
+        
+        if not available_letters:
+            # All letters used, reset pool
+            room.used_letters = []
+            available_letters = list(self.LETTERS)
+            
+        letter = random.choice(available_letters).upper()
+        room.used_letters.append(letter)
+        
         categories = random.sample(self.CATEGORIES, 5)
         
         new_round = Round(

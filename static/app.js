@@ -393,6 +393,27 @@ window.addEventListener('DOMContentLoaded', () => {
         // Simple reload for now, or implement deeper reset
         window.location.reload();
     });
+
+    // --- DARK MODE LOGIC ---
+    const themeBtn = document.getElementById('theme-toggle');
+    const body = document.body;
+
+    // Check local storage
+    if (localStorage.getItem('theme') === 'dark') {
+        body.classList.add('dark-mode');
+        themeBtn.innerText = "☀️";
+    }
+
+    themeBtn.addEventListener('click', () => {
+        body.classList.toggle('dark-mode');
+        if (body.classList.contains('dark-mode')) {
+            localStorage.setItem('theme', 'dark');
+            themeBtn.innerText = "☀️";
+        } else {
+            localStorage.setItem('theme', 'light');
+            themeBtn.innerText = "🌙";
+        }
+    });
 });
 
 // Helper for player map
