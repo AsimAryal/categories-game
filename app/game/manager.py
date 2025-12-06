@@ -55,10 +55,13 @@ class GameManager:
             if not room.players:
                 del self.rooms[room.code]
 
-    def start_round(self, room_code: str) -> Optional[Round]:
+    def start_round(self, room_code: str, rush_seconds: int = 5) -> Optional[Round]:
         room = self.rooms.get(room_code)
         if not room or len(room.players) != 2:
             return None
+        
+        # Update settings
+        room.rush_seconds = max(5, rush_seconds) # Enforce min 5s
         
         round_num = len(room.history) + 1
         

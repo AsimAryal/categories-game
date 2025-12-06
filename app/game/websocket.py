@@ -83,12 +83,22 @@ async def handle_websocket(websocket: WebSocket):
 
                 elif msg_type == MessageType.START_GAME:
                     if not room_code: continue
-                    new_round = game_manager.start_round(room_code)
+                    # Extract config
+                    rush_sec = payload.get("rush_seconds", 5)
+                    try:
+                        rush_sec = int(rush_sec)
+                    except:
+                        rush_sec = 5
+                        
+                    new_round = game_manager.start_round(room_code, rush_seconds=rush_sec)
                     if new_round:
                         room = game_manager.rooms[room_code]
                         await _broadcast_to_room(room, {
                             "type": MessageType.ROUND_START,
-                            "payload": new_round.dict()
+                            "payload": {
+                                **new_round.dict(),
+                                "rush_seconds": room.rush_seconds
+                            } 
                         })
 
                 elif msg_type == MessageType.SUBMIT_ANSWERS:
@@ -98,15 +108,16 @@ async def handle_websocket(websocket: WebSocket):
                     
                     if result["opponent_submitted"]:
                         # Notify ONLY the OTHER player (who has not submitted)
-                        # We can just broadcast to room, client can check if it was them
-                        # But better to be explicit or broadcast generic event
                         room = game_manager.rooms[room_code]
                         # Find opponent
                         opponent_id = [pid for pid in room.players if pid != player_id][0]
                         
                         await manager.broadcast({
                             "type": MessageType.OPPONENT_SUBMITTED,
-                            "payload": {"opponent_id": player_id}
+                            "payload": {
+                                "opponent_id": player_id,
+                                "rush_seconds": room.rush_seconds
+                            }
                         }, [opponent_id])
                         
                     if result["all_submitted"]:

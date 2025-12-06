@@ -2,20 +2,68 @@
 const PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const WS_URL = `${PROTOCOL}//${window.location.host}/ws`;
 
+// --- SOUND MANAGER ---
+const Sound = {
+    ctx: null,
+    init: function () {
+        if (!this.ctx) {
+            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+    },
+    playTone: function (freq, type, duration, vol = 0.1) {
+        if (!this.ctx) this.init();
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+
+        gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start();
+        osc.stop(this.ctx.currentTime + duration);
+    },
+    tick: function () { this.playTone(800, 'sine', 0.1, 0.1); },
+    alert: function () {
+        // Siren effect
+        if (!this.ctx) this.init();
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(600, this.ctx.currentTime);
+        osc.frequency.linearRampToValueAtTime(800, this.ctx.currentTime + 0.1);
+        osc.frequency.linearRampToValueAtTime(600, this.ctx.currentTime + 0.2);
+
+        gain.gain.value = 0.2;
+        gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 0.5);
+
+        osc.start();
+        osc.stop(this.ctx.currentTime + 0.5);
+    },
+    start: function () {
+        this.playTone(440, 'sine', 0.1);
+        setTimeout(() => this.playTone(660, 'sine', 0.2), 100);
+        setTimeout(() => this.playTone(880, 'sine', 0.4), 200);
+    },
+    end: function () {
+        this.playTone(300, 'square', 0.3, 0.2);
+        setTimeout(() => this.playTone(200, 'square', 0.3, 0.2), 150);
+    }
+};
+
 // --- STATE ---
 let socket = null;
-let myPlayerId = null; // Will need to infer or get from server (server doesn't explicitly send ID in JOIN response but sends player list. We match name or infer from order? Better if server sent my ID. I'll infer from context or add to payload)
-// Actually server sends players list. I need to know which one is ME.
-// I will rely on the local name I typed used to simple match or add logic.
-// UPDATE: I'll modify the client to just store its local name and try to match, 
-// OR better, I'll update the server to send "your_id" in the LOBBY_UPDATE or JOIN response.
-// Let's assume standard behavior for now: I'll infer "is_me" from the payload if possible.
-// Wait, I designed `LOBBY_UPDATE` to send strictly the room state.
-// I'll rely on the server sending generic messages. I'll add a heuristic: 
-// The server sends `send_personal_message` for LOBBY_UPDATE properly on join.
-// I'll update the logic to store "myName" and use that to highlight.
-
-let myName = "";
+let myPlayerId = null;
+let myName = localStorage.getItem('player_name') || "";
 let currentRoomCode = "";
 let currentRound = null;
 let timerInterval = null;
@@ -32,16 +80,31 @@ const screens = {
     final: document.getElementById('final-screen')
 };
 
+// --- TOAST ---
+function showToast(msg, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.innerText = msg;
+    container.appendChild(el);
+    setTimeout(() => {
+        el.style.animation = "fadeOut 0.3s forwards";
+        setTimeout(() => el.remove(), 300);
+    }, 3000);
+}
+
 // --- WEBSOCKET SETUP ---
 function connect() {
     socket = new WebSocket(WS_URL);
 
     socket.onopen = () => {
+        showToast("Connected to server", "success");
         document.getElementById('status-bar').classList.add('hidden');
         console.log("Connected to WS");
     };
 
     socket.onclose = () => {
+        showToast("Disconnected! Reconnecting...", "error");
         document.getElementById('status-bar').innerText = "Disconnected. Reconnecting...";
         document.getElementById('status-bar').classList.remove('hidden');
         setTimeout(connect, 3000);
@@ -73,10 +136,11 @@ function handleMessage(msg) {
             startRound(payload);
             break;
         case "OPPONENT_SUBMITTED":
-            handleOpponentSubmitted();
+            handleOpponentSubmitted(payload);
             break;
         case "ROUND_ENDED":
-            // Transition to Scoring
+            Sound.end();
+            document.body.classList.remove('rush-mode'); // Clear rush
             setupScoring(payload);
             break;
         case "ROUND_RESULTS":
@@ -86,7 +150,7 @@ function handleMessage(msg) {
             showFinalResults(payload);
             break;
         case "ERROR":
-            alert(payload.message);
+            showToast(payload.message, "error");
             break;
     }
 }
@@ -108,19 +172,10 @@ function updateLobby(payload) {
     const list = document.getElementById('player-list');
     list.innerHTML = '';
 
-    let amIHost = false;
-    // Heuristic to find self (Server broadcast doesn't strictly ID me, but we know our name)
-    // IMPORTANT: In a real app we'd use a session token. Here we match names or just trust flow.
-    // For "isHost" check:
-    // If I just joined and I am the host, the personalized message said "is_host": true.
-    // The payload passed to updateLobby might be the personalized one OR the broadcast one.
-    // Let's use the 'is_host' flag if present in the top level of payload (from personal msg).
-
     if (payload.is_host !== undefined) {
         isHost = payload.is_host;
     }
 
-    // Also if I am in the player list and marked as host
     const me = players.find(p => p.name === myName);
     if (me && me.is_host) isHost = true;
 
@@ -130,7 +185,6 @@ function updateLobby(payload) {
         span.innerText = p.name;
         if (p.name === myName) {
             span.classList.add('is-me');
-            // Store my ID if possible? Models send ID.
             myPlayerId = p.id;
         }
         list.appendChild(span);
@@ -152,6 +206,8 @@ function updateLobby(payload) {
 }
 
 function startRound(roundData) {
+    Sound.start();
+    document.body.classList.remove('rush-mode');
     currentRound = roundData;
     showScreen('game');
 
@@ -176,11 +232,18 @@ function startRound(roundData) {
     timerEl.innerText = timeLeft;
     timerEl.classList.remove('warning');
 
+    // Start interval
     if (timerInterval) clearInterval(timerInterval);
     timerInterval = setInterval(() => {
         timeLeft--;
         timerEl.innerText = timeLeft;
-        if (timeLeft <= 10) timerEl.classList.add('warning');
+
+        // Sound constraints: Tick every sec when < 10
+        if (timeLeft <= 10 && timeLeft > 0) {
+            Sound.tick();
+            timerEl.classList.add('warning');
+        }
+
         if (timeLeft <= 0) {
             clearInterval(timerInterval);
             submitAnswers(); // Auto submit
@@ -199,25 +262,29 @@ function submitAnswers() {
 
     send("SUBMIT_ANSWERS", { answers });
 
-    // Show loading or waiting state overlay? For now just disable button
     document.getElementById('btn-submit').innerText = "Submitted! Waiting...";
     document.getElementById('btn-submit').disabled = true;
+    document.body.classList.remove('rush-mode'); // Clear if we finished
 }
 
-function handleOpponentSubmitted() {
-    // Turn visible timer to red and set to 5 seconds if > 5
-    if (timeLeft > 5) {
-        timeLeft = 5;
+function handleOpponentSubmitted(payload) {
+    // payload has rush_seconds
+    const rushSec = payload.rush_seconds || 5;
+
+    // Check if we still have time
+    if (timeLeft > rushSec) {
+        Sound.alert();
+        timeLeft = rushSec;
         document.getElementById('timer').innerText = timeLeft;
-        // The interval is still running, it will naturally tick down from 5
-        alert("Opponent submitted! 5 seconds left!");
+        document.body.classList.add('rush-mode');
+        showToast(`Opponent submitted! ${rushSec}s RUSH!`, "error");
     }
 }
 
 function setupScoring(payload) {
     showScreen('scoring');
     const round = payload.round;
-    const players = payload.players; // dict {id: Player}
+    const players = payload.players;
 
     // Identify opponent ID
     const pIds = Object.keys(players);
@@ -231,11 +298,7 @@ function setupScoring(payload) {
         row.className = 'scoring-row';
 
         const myAnswer = round.answers[myPlayerId] ? round.answers[myPlayerId][cat] : "";
-        const oppAnswer = round.answers[opponentId] ? round.answers[opponentId][cat] : "";
-
-        // We need to score BOTH answers.
-        // Actually typically you primarily score the opponent, but self-scoring works too.
-        // Spec says: "Each player scores both themselves and the other player"
+        const oppAnswer = (opponentId && round.answers[opponentId]) ? round.answers[opponentId][cat] : "";
 
         const html = `
             <div class="scoring-category">${cat}</div>
@@ -260,7 +323,6 @@ function setupScoring(payload) {
         container.appendChild(row);
     });
 
-    // Setup click handlers for score buttons
     document.querySelectorAll('.score-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const group = e.target.closest('.score-control');
@@ -281,14 +343,11 @@ function renderScoreControls(category, targetPlayerId) {
 }
 
 function submitScores() {
-    const scores = {}; // category -> {targetId -> score}
-
-    // Gather logic
+    const scores = {};
     document.querySelectorAll('.score-control').forEach(ctrl => {
         const cat = ctrl.dataset.cat;
         const target = ctrl.dataset.target;
         const val = parseInt(ctrl.querySelector('.selected').dataset.val);
-
         if (!scores[cat]) scores[cat] = {};
         scores[cat][target] = val;
     });
@@ -300,41 +359,31 @@ function submitScores() {
 
 function showRoundResults(payload) {
     showScreen('results');
-    const roundScores = payload.round_scores; // playerId -> {cat: score}
+    const roundScores = payload.round_scores;
     const totalScores = payload.cumulative_scores;
 
-    // Reset buttons
     document.getElementById('btn-submit').disabled = false;
     document.getElementById('btn-submit').innerText = "Submit Answers";
     document.getElementById('btn-submit-scores').disabled = false;
     document.getElementById('btn-submit-scores').innerText = "Submit Scores";
 
     let html = `<table class="result-table"><thead><tr><th>Player</th><th>Round Score</th><th>Total</th></tr></thead><tbody>`;
-
     Object.keys(totalScores).forEach(pid => {
-        // Calculate round total
         let rTotal = 0;
         if (roundScores[pid]) {
             rTotal = Object.values(roundScores[pid]).reduce((a, b) => a + b, 0);
         }
-        // Name lookup - simplified (we need access to players list again? strictly we didn't save it)
-        // Ideally we persist players globally.
-        // Hack: Use the DOM or saved state. 
-        // Better: I will save players map in updateLobby.
         const name = (window.playersMap && window.playersMap[pid]) ? window.playersMap[pid].name : (pid === myPlayerId ? "You" : "Opponent");
-
         html += `<tr><td>${name}</td><td>+${rTotal}</td><td>${totalScores[pid]}</td></tr>`;
     });
     html += `</tbody></table>`;
-
     document.getElementById('round-summary').innerHTML = html;
 
-    // Controls
     if (isHost) {
         document.getElementById('next-round-controls').classList.remove('hidden');
         document.getElementById('waiting-next-round').classList.add('hidden');
 
-        if (payload.is_final_round) { // >= 3 rounds
+        if (payload.is_final_round) {
             document.getElementById('btn-end-game').classList.remove('hidden');
         }
     } else {
@@ -359,26 +408,34 @@ function showFinalResults(payload) {
 window.addEventListener('DOMContentLoaded', () => {
     connect();
 
+    // Auto-fill inputs
+    if (myName) {
+        document.getElementById('host-name').value = myName;
+        document.getElementById('join-name').value = myName;
+    }
+
     // Event Listeners
     document.getElementById('btn-host').addEventListener('click', () => {
         myName = document.getElementById('host-name').value;
-        if (!myName) return alert("Enter name");
-        send("JOIN_GAME", { player_name: myName }); // No code = host
+        if (!myName) return showToast("Enter name", "error");
+        localStorage.setItem('player_name', myName);
+        send("JOIN_GAME", { player_name: myName });
     });
 
     document.getElementById('btn-join').addEventListener('click', () => {
         myName = document.getElementById('join-name').value;
         const code = document.getElementById('join-code').value;
-        if (!myName || !code) return alert("Enter name and code");
+        if (!myName || !code) return showToast("Enter name and code", "error");
+        localStorage.setItem('player_name', myName);
         send("JOIN_GAME", { player_name: myName, room_code: code });
     });
 
     document.getElementById('btn-start-game').addEventListener('click', () => {
-        send("START_GAME", {});
+        const rush = document.getElementById('config-rush-time').value;
+        send("START_GAME", { rush_seconds: rush });
     });
 
     document.getElementById('btn-submit').addEventListener('click', submitAnswers);
-
     document.getElementById('btn-submit-scores').addEventListener('click', submitScores);
 
     document.getElementById('btn-next-round').addEventListener('click', () => {
@@ -390,7 +447,6 @@ window.addEventListener('DOMContentLoaded', () => {
     });
 
     document.getElementById('btn-play-again').addEventListener('click', () => {
-        // Simple reload for now, or implement deeper reset
         window.location.reload();
     });
 
@@ -398,7 +454,6 @@ window.addEventListener('DOMContentLoaded', () => {
     const themeBtn = document.getElementById('theme-toggle');
     const body = document.body;
 
-    // Check local storage
     if (localStorage.getItem('theme') === 'dark') {
         body.classList.add('dark-mode');
         themeBtn.innerText = "☀️";
@@ -414,10 +469,14 @@ window.addEventListener('DOMContentLoaded', () => {
             themeBtn.innerText = "🌙";
         }
     });
+
+    // Audio context resume on first interaction
+    document.body.addEventListener('click', () => {
+        if (Sound.ctx && Sound.ctx.state === 'suspended') Sound.ctx.resume();
+    }, { once: true });
 });
 
 // Helper for player map
-// Patch updateLobby to save map
 const originalUpdateLobby = updateLobby;
 window.playersMap = {};
 updateLobby = function (payload) {

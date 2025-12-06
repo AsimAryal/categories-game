@@ -77,6 +77,7 @@ class Room(BaseModel):
     current_round: Optional[Round] = None
     history: List[Round] = []
     used_letters: List[str] = []
+    rush_seconds: int = 5
     
     # Timer management (server side validation mainly)
     round_start_time: float = 0

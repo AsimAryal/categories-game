@@ -40,10 +40,17 @@
                 <!-- Players inserted here -->
             </div>
             <div id="host-controls" class="hidden">
+                <div class="config-row">
+                    <label>Rush Timer (sec):</label>
+                    <input type="number" id="config-rush-time" value="5" min="5" max="60" style="width: 80px;">
+                </div>
                 <button id="btn-start-game" class="primary-btn">Start Game</button>
             </div>
             <div id="waiting-msg" class="hidden">Waiting for host to start...</div>
         </section>
+
+        <!-- TOAST CONTAINER -->
+        <div id="toast-container"></div>
 
         <!-- GAME ROUND SCREEN -->
         <section id="game-screen" class="screen hidden">
