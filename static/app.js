@@ -103,6 +103,13 @@ function connect() {
         console.log("Connected to WS");
         // Request games list
         send("GET_GAMES", {});
+
+        // Poll for games list every 2 seconds (safeguard)
+        setInterval(() => {
+            if (socket.readyState === WebSocket.OPEN && !currentRoomCode) {
+                send("GET_GAMES", {});
+            }
+        }, 2000);
     };
 
     socket.onclose = () => {
@@ -232,9 +239,20 @@ function renderGamesList(games) {
             <button style="width: auto; padding: 5px 10px; font-size: 12px;">Join</button>
         `;
         div.addEventListener('click', () => {
+            const nameInput = document.getElementById('join-name');
+            const name = nameInput.value.trim();
+
+            if (!name) {
+                showToast("Please enter your name above to join!", "error");
+                nameInput.focus();
+                return;
+            }
+
+            // Instant join
             document.getElementById('join-code').value = game.code;
-            // Use yellow fade to highlight?
-            document.getElementById('join-code').focus();
+            localStorage.setItem('player_name', name);
+            myName = name; // Update global
+            send("JOIN_GAME", { player_name: name, room_code: game.code });
         });
         list.appendChild(div);
     });

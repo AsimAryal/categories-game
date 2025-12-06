@@ -115,6 +115,8 @@ async def handle_websocket(websocket: WebSocket):
                                 "rush_seconds": room.rush_seconds
                             } 
                         })
+                        # Game started, removing from lobby list
+                        await manager.broadcast_games_list()
 
                 # --- GET GAMES ---
                 elif msg_type == MessageType.GET_GAMES:
