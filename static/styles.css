@@ -36,14 +36,21 @@ body.dark-mode .scoring-row {
     color: var(--text-color);
 }
 
-body.dark-mode .answer-block {
-    background-color: #0f3460;
-    color: var(--text-color);
-}
-
 body.dark-mode .category-label {
     color: #e6e6e6;
     /* High contrast for labels */
+}
+
+body.dark-mode .player-tag {
+    background-color: #0f3460;
+    color: #e6e6e6;
+    border-color: #0f3460;
+}
+
+body.dark-mode .player-tag.is-me {
+    background-color: #1565c0;
+    color: white;
+    border-color: #42a5f5;
 }
 
 /* Button style */
