@@ -286,6 +286,9 @@ function setupScoring(payload) {
     const round = payload.round;
     const players = payload.players;
 
+    // Update Subtitle with Letter
+    document.getElementById('scoring-subtitle').innerText = `Rate the answers! (Letter: ${round.letter})`;
+
     // Identify opponent ID
     const pIds = Object.keys(players);
     const opponentId = pIds.find(id => id !== myPlayerId);
