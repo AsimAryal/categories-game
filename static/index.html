@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Categories Game</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- CONNECTION STATUS -->
+        <div id="status-bar" class="hidden">Connecting...</div>
+
+        <!-- LOBBY SCREEN -->
+        <section id="lobby-screen" class="screen">
+            <h1>Categories</h1>
+            <div class="card">
+                <h2>Host Game</h2>
+                <input type="text" id="host-name" placeholder="Your Name">
+                <button id="btn-host">Host New Game</button>
+            </div>
+            
+            <div class="divider">OR</div>
+            
+            <div class="card">
+                <h2>Join Game</h2>
+                <input type="text" id="join-name" placeholder="Your Name">
+                <input type="text" id="join-code" placeholder="Room Code" style="text-transform: uppercase;">
+                <button id="btn-join">Join Game</button>
+            </div>
+        </section>
+
+        <!-- WAITING ROOM (LOBBY AFTER JOIN) -->
+        <section id="waiting-screen" class="screen hidden">
+            <h1>Room: <span id="display-room-code"></span></h1>
+            <div id="player-list">
+                <!-- Players inserted here -->
+            </div>
+            <div id="host-controls" class="hidden">
+                <button id="btn-start-game" class="primary-btn">Start Game</button>
+            </div>
+            <div id="waiting-msg" class="hidden">Waiting for host to start...</div>
+        </section>
+
+        <!-- GAME ROUND SCREEN -->
+        <section id="game-screen" class="screen hidden">
+            <div class="game-header">
+                <div class="letter-display">Letter: <span id="current-letter">?</span></div>
+                <div class="timer" id="timer">60</div>
+            </div>
+            
+            <div id="categories-container">
+                <!-- Categories inputs inserted here -->
+            </div>
+            
+            <button id="btn-submit" class="floating-action-btn">Submit Answers</button>
+        </section>
+
+        <!-- SCORING SCREEN -->
+        <section id="scoring-screen" class="screen hidden">
+            <h2>Scoring</h2>
+            <p>Rate the answers!</p>
+            <div id="scoring-container">
+                <!-- Scoring rows inserted here -->
+            </div>
+            <button id="btn-submit-scores" class="primary-btn">Submit Scores</button>
+        </section>
+
+        <!-- ROUND RESULTS SCREEN -->
+        <section id="results-screen" class="screen hidden">
+            <h2>Round Results</h2>
+            <div id="round-summary">
+                <!-- Scores inserted here -->
+            </div>
+            
+            <div id="round-details">
+                <!-- Detailed answer list -->
+            </div>
+
+            <div id="next-round-controls" class="hidden">
+                <button id="btn-next-round" class="primary-btn">Next Round</button>
+            </div>
+             <div id="waiting-next-round" class="hidden">Waiting for host...</div>
+
+             <button id="btn-end-game" class="secondary-btn hidden">End Game</button>
+        </section>
+
+        <!-- FINAL RESULTS SCREEN -->
+        <section id="final-screen" class="screen hidden">
+            <h1>Game Over</h1>
+            <div id="final-scores"></div>
+            <div id="game-history"></div>
+            <button id="btn-play-again" class="primary-btn">Play Again</button>
+        </section>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
