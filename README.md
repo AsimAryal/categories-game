@@ -6,19 +6,18 @@ I've got it deployed to my Raspberry Pi 4
 ## Features
 - **Real-time Gameplay**: Uses WebSockets for instant state synchronization.
 - **Mobile-First Design**: Optimized for phone screens with touch-friendly UI.
-- **Local Multiplayer**: Play with a friend on the same Wi-Fi.
+- **Local Multiplayer**: Play with friends (5 people max) on the same Wi-Fi.
 - **In-Memory State**: No database required.
 
 ## Tech Stack
 - **Backend**: Python 3.11, FastAPI, Uvicorn, WebSockets.
 - **Frontend**: HTML5, CSS3, Vanilla JavaScript.
-- **Manager**: `uv` (Fast Python package installer and resolver).
+- **Manager**: `uv` 
 
 ## How to Run
 
 ### Prerequisites
-- Python 3.11+
-- `uv` installed (recommended) or standard `pip`.
+- `uv` installed (recommended) or standard `pip` if not.
 
 ### Setup & Run
 1.  **Clone/Open** the project folder.
