@@ -212,8 +212,9 @@ function updateLobby(payload) {
     } else {
         hostControls.classList.add('hidden');
         waitingMsg.classList.remove('hidden');
-        if (players.length < 2) waitingMsg.innerText = "Waiting for Player 2...";
-        else waitingMsg.innerText = "Waiting for host to start...";
+        waitingMsg.classList.remove('hidden');
+        if (players.length < 2) waitingMsg.innerText = `Waiting for players... (${players.length}/5)`;
+        else waitingMsg.innerText = `Waiting for host to start... (${players.length}/5)`;
     }
 }
 
@@ -234,7 +235,7 @@ function renderGamesList(games) {
         div.innerHTML = `
             <div class="game-info">
                 <span class="game-host">${game.host_name}'s Game</span>
-                <span style="color:#888; font-size:12px;">(${game.player_count}/2)</span>
+                <span style="color:#888; font-size:12px;">(${game.player_count}/5)</span>
             </div>
             <button style="width: auto; padding: 5px 10px; font-size: 12px;">Join</button>
         `;
@@ -343,9 +344,9 @@ function setupScoring(payload) {
     // Update Subtitle with Letter
     document.getElementById('scoring-subtitle').innerText = `Rate the answers! (Letter: ${round.letter})`;
 
-    // Identify opponent ID
+    // Identify ALL opponents
     const pIds = Object.keys(players);
-    const opponentId = pIds.find(id => id !== myPlayerId);
+    const opponents = pIds.filter(id => id !== myPlayerId);
 
     const container = document.getElementById('scoring-container');
     container.innerHTML = '';
@@ -355,25 +356,40 @@ function setupScoring(payload) {
         row.className = 'scoring-row';
 
         const myAnswer = round.answers[myPlayerId] ? round.answers[myPlayerId][cat] : "";
-        const oppAnswer = (opponentId && round.answers[opponentId]) ? round.answers[opponentId][cat] : "";
+
+        // Build HTML for ME + ALL Opponents
+        // We use a responsive grid layout or just flex col for answers
+
+        let answersHtml = `
+            <div class="answer-block" style="border-left: 5px solid var(--primary-color);">
+                <div>
+                    <small style="color:var(--primary-color); font-weight:bold;">You</small><br>
+                    <span class="answer-text">${myAnswer || "<em>(Empty)</em>"}</span>
+                </div>
+                <div style="font-size:12px; color:#888;">(Your Answer)</div>
+            </div>
+        `;
+
+        // Render opponent cards
+        opponents.forEach(oppId => {
+            const oppName = players[oppId] ? players[oppId].name : "Unknown";
+            const oppAnswer = (round.answers[oppId]) ? round.answers[oppId][cat] : "";
+
+            answersHtml += `
+            <div class="answer-block">
+                <div>
+                    <small>${oppName}</small><br>
+                    <span class="answer-text">${oppAnswer || "<em>(Empty)</em>"}</span>
+                </div>
+                ${renderScoreControls(cat, oppId)}
+            </div>
+            `;
+        });
 
         const html = `
             <div class="scoring-category">${cat}</div>
             <div class="answer-comparison">
-                <div class="answer-block">
-                    <div>
-                        <small>You</small><br>
-                        <span class="answer-text">${myAnswer || "<em>(Empty)</em>"}</span>
-                    </div>
-                    ${renderScoreControls(cat, myPlayerId)}
-                </div>
-                 <div class="answer-block">
-                    <div>
-                        <small>${opponentId ? players[opponentId].name : "Left Game"}</small><br>
-                        <span class="answer-text">${oppAnswer || "<em>(Empty)</em>"}</span>
-                    </div>
-                    ${opponentId ? renderScoreControls(cat, opponentId) : "<em>N/A</em>"}
-                </div>
+                ${answersHtml}
             </div>
         `;
         row.innerHTML = html;

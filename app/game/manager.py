@@ -31,7 +31,7 @@ class GameManager:
         if not room:
             return None, None
         
-        if len(room.players) >= 2:
+        if len(room.players) >= 5:
             return None, None # Room full
             
         player = Player(id=str(uuid.uuid4()), name=player_name, is_host=False)
@@ -57,7 +57,7 @@ class GameManager:
 
     def start_round(self, room_code: str, rush_seconds: int = 5) -> Optional[Round]:
         room = self.rooms.get(room_code)
-        if not room or len(room.players) != 2:
+        if not room or len(room.players) < 2:
             return None
         
         # Update settings
@@ -101,7 +101,7 @@ class GameManager:
         """
         open_rooms = []
         for code, room in self.rooms.items():
-            if room.state == GameState.LOBBY and len(room.players) < 2:
+            if room.state == GameState.LOBBY and len(room.players) < 5:
                 # Find host name
                 host_name = "Unknown"
                 if room.host_id and room.host_id in room.players:
@@ -195,16 +195,35 @@ class GameManager:
             # For each target player 'target_pid', calculate consensus score
             for target_pid in room.players.keys():
                 votes = []
+                # Average Score Logic: (Sum of votes) / (Number of voters)
+                # Note: If target played, they don't vote for themselves ideally (or we ignore their vote if they did).
+                # But currently: every client sends scores for every OTHER player.
+                # So for a target P, the voters are (All Players - P).
+                
+                total_points = 0
+                vote_count = 0
+                
                 for voter_id in room.players.keys():
-                    # Check what voter_id voted for target_pid in category cat
-                    # Structure: vote_payload[cat][target_pid]
+                    if voter_id == target_pid:
+                        continue # Don't count self-votes if any
+                        
                     voter_votes_payload = room.current_round.scoring_votes.get(voter_id, {})
                     cat_votes = voter_votes_payload.get(cat, {})
-                    score = cat_votes.get(target_pid, 0)
-                    votes.append(score)
+                    
+                    if target_pid in cat_votes:
+                        total_points += cat_votes[target_pid]
+                        vote_count += 1
                 
-                # If single player, min is just their own vote. If multiplayer, strict min prevents cheating/conflict.
-                final_score = min(votes) if votes else 0
+                # If no votes (shouldn't happen in 2+ player game unless errors), default 0
+                final_score = 0
+                if vote_count > 0:
+                    final_score = int(round(total_points / vote_count)) # Round to nearest int for simplicity? Or keep float?
+                    # Plan didn't specify, but existing "score" on Player is int. Let's round.
+                    # Or maybe total points? 
+                    # If I get 2, 2, 2, 0 -> 6/4 = 1.5. Round to 2? 
+                    # If I get 2, 0 -> 1.
+                    # Let's use strict int rounding (standard round).
+                
                 room.current_round.scores[target_pid][cat] = final_score
                 
         # Update accumulators
