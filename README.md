@@ -27,7 +27,7 @@ A minimal, polished two-player "Categories" game (Scattergories style) that runs
     ```
     *Alternatively, manally:*
     ```bash
-    uv venv
+    uv venv --python 3.11
     uv pip install fastapi uvicorn websockets
     uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
     ```
@@ -47,7 +47,7 @@ A minimal, polished two-player "Categories" game (Scattergories style) that runs
 - Click **Host New Game**.
 - Note the **Room Code** shown at the top.
 
-### 3. Join Game (Player 2)
+### 3. Join Game (Player 2 to 5)
 - Enter your name.
 - Enter the **Room Code**.
 - Click **Join Game**.

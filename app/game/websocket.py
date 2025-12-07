@@ -135,18 +135,19 @@ async def handle_websocket(websocket: WebSocket):
                     result = game_manager.submit_answers(room_code, player_id, req.answers)
                     
                     if result["opponent_submitted"]:
-                        # Notify ONLY the OTHER player (who has not submitted)
+                        # Notify ALL other players who have not submitted
                         room = game_manager.rooms[room_code]
-                        # Find opponent
-                        opponent_id = [pid for pid in room.players if pid != player_id][0]
+                        submitted_ids = set(room.current_round.answers.keys())
+                        target_ids = [pid for pid in room.players if pid not in submitted_ids]
                         
-                        await manager.broadcast({
-                            "type": MessageType.OPPONENT_SUBMITTED,
-                            "payload": {
-                                "opponent_id": player_id,
-                                "rush_seconds": room.rush_seconds
-                            }
-                        }, [opponent_id])
+                        if target_ids:
+                            await manager.broadcast({
+                                "type": MessageType.OPPONENT_SUBMITTED,
+                                "payload": {
+                                    "opponent_id": player_id,
+                                    "rush_seconds": room.rush_seconds
+                                }
+                            }, target_ids)
                         
                     if result["all_submitted"]:
                         room = game_manager.rooms[room_code]
