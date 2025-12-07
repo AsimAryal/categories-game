@@ -1,6 +1,7 @@
 # Categories Game
 
 A minimal, polished two-player "Categories" game (Scattergories style) that runs in mobile browsers over the local network. Built with Python 3.11 (FastAPI) and Vanilla JS.
+I've got it deployed to my Raspberry Pi 4
 
 ## Features
 - **Real-time Gameplay**: Uses WebSockets for instant state synchronization.
