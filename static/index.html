@@ -3,8 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Categories Game</title>
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=2">
 </head>
 <body>
     <div id="app">
@@ -14,27 +17,53 @@
         <!-- DARK MODE TOGGLE -->
         <button id="theme-toggle" class="theme-btn" aria-label="Toggle Dark Mode">🌙</button>
 
+        <!-- NAME ENTRY MODAL -->
+        <div id="name-modal" class="modal hidden">
+            <div class="modal-content">
+                <h2>👋 Welcome!</h2>
+                <p>Enter your name to get started:</p>
+                <input type="text" id="modal-name-input" placeholder="Your Name" maxlength="20">
+                <button id="btn-modal-save">Let's Play!</button>
+            </div>
+        </div>
+
         <!-- LOBBY SCREEN -->
         <section id="lobby-screen" class="screen">
             <h1>Categories</h1>
-            <div class="card">
-                <h2>Host Game</h2>
-                <input type="text" id="host-name" placeholder="Your Name">
-                <button id="btn-host">Host New Game</button>
+            
+            <!-- Player Greeting -->
+            <div id="player-greeting" class="greeting-bar">
+                Playing as: <span id="display-player-name"></span>
+                <button id="btn-change-name" class="text-btn">Change</button>
             </div>
             
-            <div id="games-list-container" class="card hidden">
-                <h2>Available Games</h2>
-                <div id="games-list"></div>
+            <!-- Tab Navigation -->
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="join">Join Game</button>
+                <button class="tab-btn" data-tab="host">Host Game</button>
             </div>
-
-            <div class="divider">OR</div>
             
-            <div class="card">
-                <h2>Join Game</h2>
-                <input type="text" id="join-name" placeholder="Your Name">
-                <input type="text" id="join-code" placeholder="Room Code" style="text-transform: uppercase;">
-                <button id="btn-join">Join Game</button>
+            <!-- Join Tab -->
+            <div id="tab-join" class="tab-content active">
+                <div id="games-list-container" class="card hidden">
+                    <h2>Available Games</h2>
+                    <div id="games-list"></div>
+                </div>
+                
+                <div class="card">
+                    <h3>Join with Code</h3>
+                    <input type="text" id="join-code" placeholder="Room Code" style="text-transform: uppercase;">
+                    <button id="btn-join">Join Game</button>
+                </div>
+            </div>
+            
+            <!-- Host Tab -->
+            <div id="tab-host" class="tab-content">
+                <div class="card">
+                    <h2>Create a New Game</h2>
+                    <p style="color: #888; margin-bottom: 16px;">Start your own game and invite friends!</p>
+                    <button id="btn-host">Host New Game</button>
+                </div>
             </div>
         </section>
 
@@ -109,6 +138,6 @@
         </section>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=2"></script>
 </body>
 </html>

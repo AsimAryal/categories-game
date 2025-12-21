@@ -240,20 +240,15 @@ function renderGamesList(games) {
             <button style="width: auto; padding: 5px 10px; font-size: 12px;">Join</button>
         `;
         div.addEventListener('click', () => {
-            const nameInput = document.getElementById('join-name');
-            const name = nameInput.value.trim();
-
-            if (!name) {
-                showToast("Please enter your name above to join!", "error");
-                nameInput.focus();
+            if (!myName) {
+                showToast("Please enter your name first!", "error");
+                document.getElementById('name-modal').classList.remove('hidden');
                 return;
             }
 
             // Instant join
             document.getElementById('join-code').value = game.code;
-            localStorage.setItem('player_name', name);
-            myName = name; // Update global
-            send("JOIN_GAME", { player_name: name, room_code: game.code });
+            send("JOIN_GAME", { player_name: myName, room_code: game.code });
         });
         list.appendChild(div);
     });
@@ -481,26 +476,78 @@ function showFinalResults(payload) {
 window.addEventListener('DOMContentLoaded', () => {
     connect();
 
-    // Auto-fill inputs
-    if (myName) {
-        document.getElementById('host-name').value = myName;
-        document.getElementById('join-name').value = myName;
+    // --- NAME MODAL LOGIC ---
+    const nameModal = document.getElementById('name-modal');
+    const modalNameInput = document.getElementById('modal-name-input');
+    const displayPlayerName = document.getElementById('display-player-name');
+
+    // Show modal if no saved name, otherwise show greeting
+    if (!myName) {
+        nameModal.classList.remove('hidden');
+    } else {
+        displayPlayerName.innerText = myName;
     }
 
-    // Event Listeners
+    // Save name from modal
+    document.getElementById('btn-modal-save').addEventListener('click', () => {
+        const name = modalNameInput.value.trim();
+        if (!name) return showToast("Please enter your name", "error");
+        localStorage.setItem('player_name', name);
+        myName = name;
+        nameModal.classList.add('hidden');
+        displayPlayerName.innerText = myName;
+    });
+
+    // Allow Enter key to submit modal
+    modalNameInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            document.getElementById('btn-modal-save').click();
+        }
+    });
+
+    // Change name button
+    document.getElementById('btn-change-name').addEventListener('click', () => {
+        modalNameInput.value = myName;
+        nameModal.classList.remove('hidden');
+        modalNameInput.focus();
+    });
+
+    // --- TAB SWITCHING LOGIC ---
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            btn.classList.add('active');
+            document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
+        });
+    });
+
+    // --- GAME EVENT LISTENERS ---
     document.getElementById('btn-host').addEventListener('click', () => {
-        myName = document.getElementById('host-name').value;
-        if (!myName) return showToast("Enter name", "error");
-        localStorage.setItem('player_name', myName);
+        if (!myName) {
+            showToast("Please enter your name first", "error");
+            nameModal.classList.remove('hidden');
+            return;
+        }
         send("JOIN_GAME", { player_name: myName });
     });
 
     document.getElementById('btn-join').addEventListener('click', () => {
-        myName = document.getElementById('join-name').value;
-        const code = document.getElementById('join-code').value;
-        if (!myName || !code) return showToast("Enter name and code", "error");
-        localStorage.setItem('player_name', myName);
+        const code = document.getElementById('join-code').value.trim().toUpperCase();
+        if (!myName) {
+            showToast("Please enter your name first", "error");
+            nameModal.classList.remove('hidden');
+            return;
+        }
+        if (!code) return showToast("Enter a room code", "error");
         send("JOIN_GAME", { player_name: myName, room_code: code });
+    });
+
+    // Allow Enter key in join code input
+    document.getElementById('join-code').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            document.getElementById('btn-join').click();
+        }
     });
 
     document.getElementById('btn-start-game').addEventListener('click', () => {
