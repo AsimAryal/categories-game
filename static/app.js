@@ -897,6 +897,21 @@ window.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Leave button on results screen (between rounds)
+    document.getElementById('btn-leave-results').addEventListener('click', () => {
+        if (confirm("Are you sure you want to leave this game?")) {
+            send("LEAVE_GAME", {});
+            clearSession();
+            currentRoomCode = "";
+            myPlayerId = null;
+            isHost = false;
+            showToast("Left the game", "info");
+            showScreen('lobby');
+            send("GET_GAMES", {});
+            startGamesListPolling();
+        }
+    });
+
     // --- DARK MODE LOGIC ---
     const themeBtn = document.getElementById('theme-toggle');
     const body = document.body;
