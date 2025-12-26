@@ -247,8 +247,9 @@ class GameManager:
                 new_host = next_host
                 
                 # Persist host changes
-                await game_store.update_player_host(player_id, False)
-                await game_store.update_player_host(next_host.id, True)
+                await self._persist_player(player, room.code)
+                await self._persist_player(next_host, room.code)
+                await self._persist_room(room)
         
         return room, player, new_host
     
@@ -484,6 +485,8 @@ class GameManager:
         for pid, player in room.players.items():
             round_total = sum(current_round.scores[pid].values())
             player.score += round_total
+            # Sync to players table column and player_data JSON
+            await self._persist_player(player, room.code)
         
         # Archive round
         room.history.append(current_round)
@@ -495,6 +498,25 @@ class GameManager:
             return None
         
         room.state = GameState.FINAL_RESULTS
+        await self._persist_room(room)
+        return room
+
+    async def update_settings(
+        self, 
+        room_code: str, 
+        rush_seconds: Optional[int] = None,
+        precise_scoring: Optional[bool] = None
+    ) -> Optional[Room]:
+        """Update room settings and persist."""
+        room = self.rooms.get(room_code)
+        if not room:
+            return None
+            
+        if rush_seconds is not None:
+            room.rush_seconds = max(5, rush_seconds)
+        if precise_scoring is not None:
+            room.precise_scoring = precise_scoring
+            
         await self._persist_room(room)
         return room
     

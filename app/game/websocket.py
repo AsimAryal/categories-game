@@ -614,13 +614,36 @@ async def handle_websocket(websocket: WebSocket):
                             }
                         })
                 
+                # --- UPDATE SETTINGS ---
+                elif msg_type == MessageType.UPDATE_SETTINGS.value:
+                    if not room_code:
+                        continue
+                    
+                    rush = payload.get("rush_seconds")
+                    precise = payload.get("precise_scoring")
+                    
+                    room = await game_manager.update_settings(
+                        room_code,
+                        rush_seconds=int(rush) if rush is not None else None,
+                        precise_scoring=precise if precise is not None else None
+                    )
+                    
+                    if room:
+                        log_game_event(
+                            room_code,
+                            "⚙️ SETTINGS UPDATED",
+                            f"Rush: {room.rush_seconds}s | Precise: {room.precise_scoring}"
+                        )
+                        await _broadcast_room_state(room)
+                
                 # --- LEAVE GAME (intentional exit) ---
                 elif msg_type == MessageType.LEAVE_GAME.value:
                     if player_id and room_code:
                         log_connection("🚪 LEFT GAME", client_ip, player_name, room_code)
                         
                         room = game_manager.rooms.get(room_code)
-                        was_host = room and room.players.get(player_id, {}).is_host if room else False
+                        player_obj = room.players.get(player_id) if room else None
+                        was_host = player_obj.is_host if player_obj else False
                         
                         # Immediately remove (no grace period for intentional leave)
                         remaining_room = await game_manager.remove_player(player_id)
@@ -632,6 +655,11 @@ async def handle_websocket(websocket: WebSocket):
                                 new_host = remaining_room.get_next_host()
                                 if new_host:
                                     new_host.is_host = True
+                                    
+                                    # PERSIST host change to database!
+                                    await game_manager._persist_player(new_host, room_code)
+                                    await game_manager._persist_room(remaining_room)
+                                    
                                     log_game_event(
                                         room_code,
                                         "👑 HOST MIGRATED",

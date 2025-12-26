@@ -26,6 +26,9 @@ class MessageType(str, enum.Enum):
     GAME_OVER = "GAME_OVER"
     ERROR = "ERROR"
     
+    # Settings sync
+    UPDATE_SETTINGS = "UPDATE_SETTINGS"
+    
     # Reconnection & session messages
     RECONNECTED = "RECONNECTED"  # Successful reconnection response
     SESSION_HIJACKED = "SESSION_HIJACKED"  # Another tab took over session

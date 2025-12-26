@@ -188,7 +188,12 @@ function handleMessage(msg) {
 
     switch (msg.type) {
         case "LOBBY_UPDATE":
-            showScreen('waiting');
+            // Only switch to waiting screen if we're in lobby or already there
+            // Don't disrupt active gameplay
+            const currentScreen = getCurrentScreen();
+            if (currentScreen === 'lobby' || currentScreen === 'waiting') {
+                showScreen('waiting');
+            }
             updateLobby(payload);
             break;
 
@@ -257,7 +262,11 @@ function handleMessage(msg) {
             if (payload.new_host_id === myPlayerId) {
                 isHost = true;
                 showToast("You are now the host!", "success");
+            } else {
+                isHost = false;
             }
+            // Update host controls on results screen if we're there
+            updateHostControlsVisibility();
             break;
 
         case "SCORING_TIMEOUT":
@@ -459,6 +468,45 @@ function showScreen(screenName) {
     window.scrollTo(0, 0);
 }
 
+function getCurrentScreen() {
+    for (const [name, el] of Object.entries(screens)) {
+        if (!el.classList.contains('hidden')) {
+            return name;
+        }
+    }
+    return null;
+}
+
+function updateHostControlsVisibility() {
+    // Update results screen controls
+    const currentScreen = getCurrentScreen();
+
+    if (currentScreen === 'results') {
+        if (isHost) {
+            document.getElementById('next-round-controls').classList.remove('hidden');
+            document.getElementById('waiting-next-round').classList.add('hidden');
+            document.getElementById('btn-end-game').classList.remove('hidden');
+        } else {
+            document.getElementById('next-round-controls').classList.add('hidden');
+            document.getElementById('waiting-next-round').classList.remove('hidden');
+            document.getElementById('btn-end-game').classList.add('hidden');
+        }
+    }
+
+    if (currentScreen === 'waiting') {
+        const hostControls = document.getElementById('host-controls');
+        const waitingMsg = document.getElementById('waiting-msg');
+
+        if (isHost) {
+            hostControls.classList.remove('hidden');
+            waitingMsg.classList.add('hidden');
+        } else {
+            hostControls.classList.add('hidden');
+            waitingMsg.classList.remove('hidden');
+        }
+    }
+}
+
 function updateLobby(payload) {
     currentRoomCode = payload.room_code;
     const players = payload.players;
@@ -498,11 +546,22 @@ function updateLobby(payload) {
         list.appendChild(span);
     });
 
-    // Host controls
+    // Sync settings if they are in payload
+    if (payload.settings) {
+        const rushInput = document.getElementById('config-rush-time');
+        const preciseInput = document.getElementById('config-precise-scoring');
+
+        if (payload.settings.rush_seconds !== undefined && document.activeElement !== rushInput) {
+            rushInput.value = payload.settings.rush_seconds;
+        }
+        if (payload.settings.precise_scoring !== undefined) {
+            preciseInput.checked = payload.settings.precise_scoring;
+        }
+    }
+
+    // Host controls logic
     const hostControls = document.getElementById('host-controls');
     const waitingMsg = document.getElementById('waiting-msg');
-
-    // Count connected players
     const connectedCount = players.filter(p => p.is_connected).length;
 
     if (isHost && connectedCount >= 2) {
@@ -862,9 +921,19 @@ window.addEventListener('DOMContentLoaded', () => {
     });
 
     document.getElementById('btn-start-game').addEventListener('click', () => {
-        const rush = document.getElementById('config-rush-time').value;
-        const preciseScoring = document.getElementById('config-precise-scoring').checked;
-        send("START_GAME", { rush_seconds: rush, precise_scoring: preciseScoring });
+        send("START_GAME", {}); // Server now uses stored settings
+    });
+
+    document.getElementById('config-rush-time').addEventListener('change', (e) => {
+        if (isHost) {
+            send("UPDATE_SETTINGS", { rush_seconds: e.target.value });
+        }
+    });
+
+    document.getElementById('config-precise-scoring').addEventListener('change', (e) => {
+        if (isHost) {
+            send("UPDATE_SETTINGS", { precise_scoring: e.target.checked });
+        }
     });
 
     document.getElementById('btn-submit').addEventListener('click', submitAnswers);
