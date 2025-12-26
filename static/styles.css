@@ -242,6 +242,17 @@ button:disabled {
     animation: pulse 1s infinite;
 }
 
+.player-tag.disconnected {
+    opacity: 0.5;
+    background: #ffcdd2;
+    border-color: #ef9a9a;
+}
+
+body.dark-mode .player-tag.disconnected {
+    background: #4a1c1c;
+    border-color: #7f2c2c;
+}
+
 @keyframes pulse {
     0% {
         transform: scale(1);
