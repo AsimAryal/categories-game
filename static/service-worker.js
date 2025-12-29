@@ -1,10 +1,10 @@
-const CACHE_NAME = 'categories-game-v2';
+const CACHE_NAME = 'categories-game-v4';
 const STATIC_ASSETS = [
   '/',
   '/static/index.html',
   '/static/styles.css',
   '/static/app.js',
-  '/static/manifest.json',
+  '/manifest.json',
   '/static/icons/icon-192.png',
   '/static/icons/icon-512.png',
   '/favicon.ico'

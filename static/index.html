@@ -329,16 +329,50 @@
         const androidText = document.querySelector('.android-text');
         const iosInstructions = document.querySelector('.ios-instructions');
 
-        // Check if already installed
-        const isStandalone = window.matchMedia('(display-mode: standalone)').matches 
-                          || window.navigator.standalone === true;
+        // Check if already installed - multiple detection methods
+        const displayModeStandalone = window.matchMedia('(display-mode: standalone)').matches;
+        const navigatorStandalone = window.navigator.standalone === true;
+        const urlHasPwaSource = window.location.search.includes('source=pwa');
+        const referrerEmpty = document.referrer === '';
         
-        pwaLog('Is standalone mode:', isStandalone);
+        // Consider it standalone if any of these are true:
+        // 1. Display mode is standalone (most reliable)
+        // 2. Navigator.standalone is true (iOS)
+        // 3. URL has source=pwa AND no referrer (launched from home screen)
+        const isStandalone = displayModeStandalone 
+                          || navigatorStandalone 
+                          || (urlHasPwaSource && referrerEmpty);
+        
+        pwaLog('Display mode standalone:', displayModeStandalone);
+        pwaLog('Navigator standalone:', navigatorStandalone);
+        pwaLog('URL has pwa source:', urlHasPwaSource);
+        pwaLog('Referrer empty:', referrerEmpty);
+        pwaLog('Is standalone (combined):', isStandalone);
         pwaLog('Protocol:', window.location.protocol);
+        pwaLog('Full URL:', window.location.href);
         
-        // Check if install was dismissed recently (within 24 hours)
+        // TEMPORARY: Show debug info on screen for mobile testing
+        const debugDiv = document.createElement('div');
+        debugDiv.id = 'pwa-debug';
+        debugDiv.style.cssText = 'position:fixed;bottom:60px;left:10px;right:10px;background:rgba(0,0,0,0.85);color:#0f0;font-family:monospace;font-size:11px;padding:10px;border-radius:8px;z-index:99999;max-height:150px;overflow:auto;';
+        debugDiv.innerHTML = `
+            <strong>PWA Debug:</strong><br>
+            display-mode: ${displayModeStandalone}<br>
+            navigator.standalone: ${navigatorStandalone}<br>
+            URL source=pwa: ${urlHasPwaSource}<br>
+            referrer empty: ${referrerEmpty}<br>
+            <strong>isStandalone: ${isStandalone}</strong><br>
+            URL: ${window.location.href.substring(0, 50)}...
+        `;
+        document.body.appendChild(debugDiv);
+        // Auto-hide after 10 seconds
+        setTimeout(() => debugDiv.remove(), 10000);
+        
+        // Check if app was already installed or dismissed recently (within 24 hours)
+        const wasInstalled = localStorage.getItem('pwa-installed') === 'true';
         const dismissedTime = localStorage.getItem('pwa-install-dismissed');
-        const shouldShowBanner = !dismissedTime || (Date.now() - parseInt(dismissedTime)) > 24 * 60 * 60 * 1000;
+        const wasDismissedRecently = dismissedTime && (Date.now() - parseInt(dismissedTime)) < 24 * 60 * 60 * 1000;
+        const shouldShowBanner = !wasInstalled && !wasDismissedRecently;
 
         // Detect iOS
         const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
@@ -402,6 +436,8 @@
             pwaLog('PWA was installed!');
             installBanner.classList.remove('show');
             deferredPrompt = null;
+            // Remember that the app was installed - never show banner again
+            localStorage.setItem('pwa-installed', 'true');
         });
 
         // Log when page is fully loaded
