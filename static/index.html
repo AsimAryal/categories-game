@@ -7,7 +7,126 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>Categories Game</title>
-    <link rel="stylesheet" href="/static/styles.css?v=2">
+    
+    <!-- PWA Meta Tags -->
+    <meta name="theme-color" content="#6C63FF">
+    <meta name="description" content="A fun multiplayer word game where players compete to come up with words for different categories">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="application-name" content="Categories">
+    
+    <!-- iOS/Safari Meta Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Categories">
+    
+    <!-- Icons -->
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="/static/icons/icon-512.png">
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/manifest.json">
+    
+    <link rel="stylesheet" href="/static/styles.css?v=3">
+    
+    <!-- Install Banner Styles -->
+    <style>
+        #install-banner {
+            display: none;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(135deg, #6C63FF 0%, #5046e5 100%);
+            color: white;
+            padding: 16px 20px;
+            z-index: 1000;
+            box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.2);
+            animation: slideUp 0.4s ease-out;
+        }
+        #install-banner.show {
+            display: block;
+        }
+        @keyframes slideUp {
+            from { transform: translateY(100%); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        .install-content {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            max-width: 600px;
+            margin: 0 auto;
+            gap: 12px;
+        }
+        .install-text {
+            flex: 1;
+        }
+        .install-text h3 {
+            margin: 0 0 4px 0;
+            font-size: 16px;
+            color: white;
+            text-align: left;
+        }
+        .install-text p {
+            margin: 0;
+            font-size: 13px;
+            opacity: 0.9;
+        }
+        .install-actions {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+        #btn-install {
+            background: white;
+            color: #6C63FF;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            width: auto;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        #btn-install:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+        #btn-dismiss-install {
+            background: transparent;
+            color: white;
+            border: 2px solid rgba(255, 255, 255, 0.4);
+            padding: 10px 16px;
+            border-radius: 25px;
+            font-size: 14px;
+            cursor: pointer;
+            width: auto;
+        }
+        #btn-dismiss-install:hover {
+            border-color: white;
+        }
+        /* iOS Install Instructions */
+        .ios-instructions {
+            display: none;
+        }
+        .ios-instructions.show {
+            display: block;
+        }
+        .ios-instructions p {
+            margin: 8px 0 0 0;
+            font-size: 13px;
+        }
+        .ios-instructions .share-icon {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            vertical-align: middle;
+            margin: 0 4px;
+        }
+    </style>
 </head>
 <body>
     <div id="app">
@@ -145,6 +264,197 @@
         </section>
     </div>
 
-    <script src="/static/app.js?v=2"></script>
+    <!-- Install Banner -->
+    <div id="install-banner">
+        <div class="install-content">
+            <div class="install-text">
+                <h3>Install Categories</h3>
+                <p class="android-text">Add to your home screen for the best experience!</p>
+                <div class="ios-instructions">
+                    <p>Tap <svg class="share-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M16 5l-1.42 1.42-1.59-1.59V16h-2V4.83L9.41 6.42 8 5l4-4 4 4zm4 5v11a2 2 0 01-2 2H6a2 2 0 01-2-2V10c0-1.11.89-2 2-2h3v2H6v11h12V10h-3V8h3a2 2 0 012 2z"/></svg> then <strong>"Add to Home Screen"</strong></p>
+                </div>
+            </div>
+            <div class="install-actions">
+                <button id="btn-install">Install</button>
+                <button id="btn-dismiss-install">Later</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=3"></script>
+    
+    <!-- PWA Install & Service Worker -->
+    <script>
+        // Debug logging
+        const PWA_DEBUG = true;
+        function pwaLog(...args) {
+            if (PWA_DEBUG) console.log('[PWA]', ...args);
+        }
+
+        // Service Worker Registration
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', async () => {
+                try {
+                    // Unregister old service workers first to ensure clean state
+                    const registrations = await navigator.serviceWorker.getRegistrations();
+                    for (const reg of registrations) {
+                        if (reg.scope !== window.location.origin + '/') {
+                            await reg.unregister();
+                            pwaLog('Unregistered old SW:', reg.scope);
+                        }
+                    }
+                    
+                    const registration = await navigator.serviceWorker.register('/service-worker.js', {
+                        scope: '/'
+                    });
+                    pwaLog('ServiceWorker registered:', registration.scope);
+                    
+                    // Check for updates
+                    registration.addEventListener('updatefound', () => {
+                        pwaLog('New service worker available');
+                    });
+                } catch (error) {
+                    pwaLog('ServiceWorker registration failed:', error);
+                }
+            });
+        } else {
+            pwaLog('ServiceWorker not supported');
+        }
+
+        // PWA Install Prompt Handler
+        let deferredPrompt = null;
+        const installBanner = document.getElementById('install-banner');
+        const btnInstall = document.getElementById('btn-install');
+        const btnDismiss = document.getElementById('btn-dismiss-install');
+        const androidText = document.querySelector('.android-text');
+        const iosInstructions = document.querySelector('.ios-instructions');
+
+        // Check if already installed - multiple detection methods
+        const displayModeStandalone = window.matchMedia('(display-mode: standalone)').matches;
+        const navigatorStandalone = window.navigator.standalone === true;
+        const urlHasPwaSource = window.location.search.includes('source=pwa');
+        const referrerEmpty = document.referrer === '';
+        
+        // Consider it standalone if any of these are true:
+        // 1. Display mode is standalone (most reliable)
+        // 2. Navigator.standalone is true (iOS)
+        // 3. URL has source=pwa AND no referrer (launched from home screen)
+        const isStandalone = displayModeStandalone 
+                          || navigatorStandalone 
+                          || (urlHasPwaSource && referrerEmpty);
+        
+        pwaLog('Display mode standalone:', displayModeStandalone);
+        pwaLog('Navigator standalone:', navigatorStandalone);
+        pwaLog('URL has pwa source:', urlHasPwaSource);
+        pwaLog('Referrer empty:', referrerEmpty);
+        pwaLog('Is standalone (combined):', isStandalone);
+        pwaLog('Protocol:', window.location.protocol);
+        pwaLog('Full URL:', window.location.href);
+        
+        // TEMPORARY: Show debug info on screen for mobile testing
+        const debugDiv = document.createElement('div');
+        debugDiv.id = 'pwa-debug';
+        debugDiv.style.cssText = 'position:fixed;bottom:60px;left:10px;right:10px;background:rgba(0,0,0,0.85);color:#0f0;font-family:monospace;font-size:11px;padding:10px;border-radius:8px;z-index:99999;max-height:150px;overflow:auto;';
+        debugDiv.innerHTML = `
+            <strong>PWA Debug:</strong><br>
+            display-mode: ${displayModeStandalone}<br>
+            navigator.standalone: ${navigatorStandalone}<br>
+            URL source=pwa: ${urlHasPwaSource}<br>
+            referrer empty: ${referrerEmpty}<br>
+            <strong>isStandalone: ${isStandalone}</strong><br>
+            URL: ${window.location.href.substring(0, 50)}...
+        `;
+        document.body.appendChild(debugDiv);
+        // Auto-hide after 10 seconds
+        setTimeout(() => debugDiv.remove(), 10000);
+        
+        // Check if app was already installed or dismissed recently (within 24 hours)
+        const wasInstalled = localStorage.getItem('pwa-installed') === 'true';
+        const dismissedTime = localStorage.getItem('pwa-install-dismissed');
+        const wasDismissedRecently = dismissedTime && (Date.now() - parseInt(dismissedTime)) < 24 * 60 * 60 * 1000;
+        const shouldShowBanner = !wasInstalled && !wasDismissedRecently;
+
+        // Detect iOS
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        pwaLog('Is iOS:', isIOS);
+
+        // Listen for beforeinstallprompt (Android/Chrome)
+        window.addEventListener('beforeinstallprompt', (e) => {
+            pwaLog('beforeinstallprompt event fired!');
+            e.preventDefault();
+            deferredPrompt = e;
+            
+            if (!isStandalone && shouldShowBanner) {
+                pwaLog('Showing install banner');
+                installBanner.classList.add('show');
+                androidText.style.display = 'block';
+                iosInstructions.classList.remove('show');
+            }
+        });
+
+        // Show iOS-specific instructions
+        if (isIOS && !isStandalone && shouldShowBanner) {
+            pwaLog('iOS detected, will show instructions');
+            setTimeout(() => {
+                installBanner.classList.add('show');
+                androidText.style.display = 'none';
+                iosInstructions.classList.add('show');
+                btnInstall.style.display = 'none';
+            }, 2000);
+        }
+
+        // For non-HTTPS warning
+        if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
+            pwaLog('WARNING: PWA install requires HTTPS! Current protocol:', window.location.protocol);
+        }
+
+        // Install button click
+        btnInstall.addEventListener('click', async () => {
+            pwaLog('Install button clicked, deferredPrompt:', !!deferredPrompt);
+            if (!deferredPrompt) {
+                pwaLog('No deferred prompt available');
+                return;
+            }
+            
+            deferredPrompt.prompt();
+            const { outcome } = await deferredPrompt.userChoice;
+            pwaLog('Install prompt outcome:', outcome);
+            
+            deferredPrompt = null;
+            installBanner.classList.remove('show');
+        });
+
+        // Dismiss button click
+        btnDismiss.addEventListener('click', () => {
+            pwaLog('Install banner dismissed');
+            installBanner.classList.remove('show');
+            localStorage.setItem('pwa-install-dismissed', Date.now().toString());
+        });
+
+        // Hide banner when app is installed
+        window.addEventListener('appinstalled', () => {
+            pwaLog('PWA was installed!');
+            installBanner.classList.remove('show');
+            deferredPrompt = null;
+            // Remember that the app was installed - never show banner again
+            localStorage.setItem('pwa-installed', 'true');
+        });
+
+        // Log when page is fully loaded
+        window.addEventListener('load', () => {
+            pwaLog('Page loaded. Checking manifest...');
+            const manifestLink = document.querySelector('link[rel="manifest"]');
+            if (manifestLink) {
+                pwaLog('Manifest link found:', manifestLink.href);
+                // Verify manifest is accessible
+                fetch(manifestLink.href)
+                    .then(r => r.json())
+                    .then(m => pwaLog('Manifest loaded:', m.name, 'display:', m.display))
+                    .catch(e => pwaLog('Manifest fetch error:', e));
+            } else {
+                pwaLog('ERROR: No manifest link found!');
+            }
+        });
+    </script>
 </body>
 </html>

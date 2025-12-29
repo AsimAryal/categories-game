@@ -26,3 +26,15 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.get("/")
 async def get():
     return FileResponse("static/index.html")
+
+@app.get("/favicon.ico")
+async def favicon():
+    return FileResponse("favicon.ico")
+
+@app.get("/manifest.json")
+async def manifest():
+    return FileResponse("static/manifest.json", media_type="application/manifest+json")
+
+@app.get("/service-worker.js")
+async def service_worker():
+    return FileResponse("static/service-worker.js", media_type="application/javascript")
