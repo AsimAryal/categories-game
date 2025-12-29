@@ -1,4 +1,4 @@
-const CACHE_NAME = 'categories-game-v4';
+const CACHE_NAME = 'categories-game-v5';
 const STATIC_ASSETS = [
   '/',
   '/static/index.html',

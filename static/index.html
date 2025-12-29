@@ -285,8 +285,8 @@
     
     <!-- PWA Install & Service Worker -->
     <script>
-        // Debug logging
-        const PWA_DEBUG = true;
+        // Debug logging (set to true for development)
+        const PWA_DEBUG = false;
         function pwaLog(...args) {
             if (PWA_DEBUG) console.log('[PWA]', ...args);
         }
@@ -350,23 +350,6 @@
         pwaLog('Is standalone (combined):', isStandalone);
         pwaLog('Protocol:', window.location.protocol);
         pwaLog('Full URL:', window.location.href);
-        
-        // TEMPORARY: Show debug info on screen for mobile testing
-        const debugDiv = document.createElement('div');
-        debugDiv.id = 'pwa-debug';
-        debugDiv.style.cssText = 'position:fixed;bottom:60px;left:10px;right:10px;background:rgba(0,0,0,0.85);color:#0f0;font-family:monospace;font-size:11px;padding:10px;border-radius:8px;z-index:99999;max-height:150px;overflow:auto;';
-        debugDiv.innerHTML = `
-            <strong>PWA Debug:</strong><br>
-            display-mode: ${displayModeStandalone}<br>
-            navigator.standalone: ${navigatorStandalone}<br>
-            URL source=pwa: ${urlHasPwaSource}<br>
-            referrer empty: ${referrerEmpty}<br>
-            <strong>isStandalone: ${isStandalone}</strong><br>
-            URL: ${window.location.href.substring(0, 50)}...
-        `;
-        document.body.appendChild(debugDiv);
-        // Auto-hide after 10 seconds
-        setTimeout(() => debugDiv.remove(), 10000);
         
         // Check if app was already installed or dismissed recently (within 24 hours)
         const wasInstalled = localStorage.getItem('pwa-installed') === 'true';
