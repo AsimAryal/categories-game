@@ -596,13 +596,13 @@ function updateLobby(payload) {
         const scoringTimerEnabled = document.getElementById('config-scoring-timer-enabled');
         const scoringTimerInput = document.getElementById('config-scoring-timer');
 
-        if (payload.settings.rush_seconds !== undefined && document.activeElement !== rushInput) {
+        if (rushInput && payload.settings.rush_seconds !== undefined && document.activeElement !== rushInput) {
             rushInput.value = payload.settings.rush_seconds;
         }
-        if (payload.settings.precise_scoring !== undefined) {
+        if (preciseInput && payload.settings.precise_scoring !== undefined) {
             preciseInput.checked = payload.settings.precise_scoring;
         }
-        if (payload.settings.scoring_timeout_seconds !== undefined) {
+        if (scoringTimerEnabled && scoringTimerInput && payload.settings.scoring_timeout_seconds !== undefined) {
             const hasTimer = payload.settings.scoring_timeout_seconds !== null && payload.settings.scoring_timeout_seconds > 0;
             scoringTimerEnabled.checked = hasTimer;
             scoringTimerInput.disabled = !hasTimer;
@@ -1041,25 +1041,33 @@ window.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    document.getElementById('config-scoring-timer-enabled').addEventListener('change', (e) => {
-        const timerInput = document.getElementById('config-scoring-timer');
-        timerInput.disabled = !e.target.checked;
-        
-        if (isHost) {
-            if (e.target.checked) {
-                send("UPDATE_SETTINGS", { scoring_timeout_seconds: parseInt(timerInput.value) || 30 });
-            } else {
-                send("UPDATE_SETTINGS", { scoring_timeout_seconds: 0 }); // 0 means disabled
+    const scoringTimerEnabledEl = document.getElementById('config-scoring-timer-enabled');
+    const scoringTimerEl = document.getElementById('config-scoring-timer');
+    
+    if (scoringTimerEnabledEl) {
+        scoringTimerEnabledEl.addEventListener('change', (e) => {
+            if (scoringTimerEl) {
+                scoringTimerEl.disabled = !e.target.checked;
             }
-        }
-    });
+            
+            if (isHost) {
+                if (e.target.checked) {
+                    send("UPDATE_SETTINGS", { scoring_timeout_seconds: parseInt(scoringTimerEl?.value) || 30 });
+                } else {
+                    send("UPDATE_SETTINGS", { scoring_timeout_seconds: 0 }); // 0 means disabled
+                }
+            }
+        });
+    }
 
-    document.getElementById('config-scoring-timer').addEventListener('change', (e) => {
-        const enabled = document.getElementById('config-scoring-timer-enabled').checked;
-        if (isHost && enabled) {
-            send("UPDATE_SETTINGS", { scoring_timeout_seconds: parseInt(e.target.value) || 30 });
-        }
-    });
+    if (scoringTimerEl) {
+        scoringTimerEl.addEventListener('change', (e) => {
+            const enabled = scoringTimerEnabledEl?.checked;
+            if (isHost && enabled) {
+                send("UPDATE_SETTINGS", { scoring_timeout_seconds: parseInt(e.target.value) || 30 });
+            }
+        });
+    }
 
     document.getElementById('btn-submit').addEventListener('click', submitAnswers);
     document.getElementById('btn-submit-scores').addEventListener('click', submitScores);

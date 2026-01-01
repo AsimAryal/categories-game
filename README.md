@@ -57,4 +57,4 @@ I've got it deployed to my Raspberry Pi 4
 - You have 60 seconds to fill in words starting with the **Letter** for 5 random **Categories**.
 - If one player submits early, the other has only **5 seconds** left!
 - **Score Results**: After each round, rate your answers (0=Invalid, 1=Duplicate, 2=Unique).
-- Play 3 rounds to see the final winner.
+- Play at least 3 rounds to see the final winner.
