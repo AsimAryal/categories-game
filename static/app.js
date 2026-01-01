@@ -78,6 +78,8 @@ let timeLeft = 60;
 let isHost = false;
 let isReconnecting = false;
 let gamesListInterval = null;
+let scoringTimerInterval = null;
+let scoringTimeLeft = 0;
 
 // --- DOM ELEMENTS ---
 const screens = {
@@ -391,16 +393,57 @@ function restorePlayingState(payload) {
 
 function restoreScoringState(payload) {
     const round = payload.round;
+    const scoringTimeout = payload.scoring_timeout_seconds;
+    const scoringRemaining = payload.scoring_remaining;
 
     document.getElementById('scoring-subtitle').innerText = `Rate the answers! (Letter: ${round.letter})`;
+
+    // Clear any existing timer
+    if (scoringTimerInterval) clearInterval(scoringTimerInterval);
+    const scoringTimerEl = document.getElementById('scoring-timer');
 
     if (payload.scores_submitted) {
         // Already submitted scores, just show waiting message
         document.getElementById('btn-submit-scores').innerText = "Waiting...";
         document.getElementById('btn-submit-scores').disabled = true;
+        scoringTimerEl.classList.add('hidden');
+        document.body.classList.remove('rush-mode');
     } else {
         document.getElementById('btn-submit-scores').innerText = "Submit Scores";
         document.getElementById('btn-submit-scores').disabled = false;
+        
+        // Handle timed scoring on reconnection
+        if (scoringTimeout && scoringTimeout > 0 && scoringRemaining > 0) {
+            scoringTimeLeft = scoringRemaining;
+            scoringTimerEl.innerText = scoringTimeLeft;
+            scoringTimerEl.classList.remove('hidden');
+            if (scoringTimeLeft <= 10) {
+                scoringTimerEl.classList.add('warning');
+            } else {
+                scoringTimerEl.classList.remove('warning');
+            }
+            document.body.classList.add('rush-mode');
+            
+            scoringTimerInterval = setInterval(() => {
+                scoringTimeLeft--;
+                scoringTimerEl.innerText = scoringTimeLeft;
+                
+                if (scoringTimeLeft <= 10 && scoringTimeLeft > 0) {
+                    Sound.tick();
+                    scoringTimerEl.classList.add('warning');
+                }
+                
+                if (scoringTimeLeft <= 0) {
+                    clearInterval(scoringTimerInterval);
+                    scoringTimerInterval = null;
+                    document.body.classList.remove('rush-mode');
+                    submitScores();
+                }
+            }, 1000);
+        } else {
+            scoringTimerEl.classList.add('hidden');
+            document.body.classList.remove('rush-mode');
+        }
     }
 
     // Build scoring UI
@@ -550,12 +593,22 @@ function updateLobby(payload) {
     if (payload.settings) {
         const rushInput = document.getElementById('config-rush-time');
         const preciseInput = document.getElementById('config-precise-scoring');
+        const scoringTimerEnabled = document.getElementById('config-scoring-timer-enabled');
+        const scoringTimerInput = document.getElementById('config-scoring-timer');
 
         if (payload.settings.rush_seconds !== undefined && document.activeElement !== rushInput) {
             rushInput.value = payload.settings.rush_seconds;
         }
         if (payload.settings.precise_scoring !== undefined) {
             preciseInput.checked = payload.settings.precise_scoring;
+        }
+        if (payload.settings.scoring_timeout_seconds !== undefined) {
+            const hasTimer = payload.settings.scoring_timeout_seconds !== null && payload.settings.scoring_timeout_seconds > 0;
+            scoringTimerEnabled.checked = hasTimer;
+            scoringTimerInput.disabled = !hasTimer;
+            if (hasTimer && document.activeElement !== scoringTimerInput) {
+                scoringTimerInput.value = payload.settings.scoring_timeout_seconds;
+            }
         }
     }
 
@@ -698,6 +751,7 @@ function setupScoring(payload) {
     showScreen('scoring');
     const round = payload.round;
     const players = payload.players;
+    const scoringTimeout = payload.scoring_timeout_seconds;
 
     // Update players map
     window.playersMap = players;
@@ -707,6 +761,40 @@ function setupScoring(payload) {
     // Reset submit button
     document.getElementById('btn-submit-scores').innerText = "Submit Scores";
     document.getElementById('btn-submit-scores').disabled = false;
+
+    // Handle timed scoring
+    const scoringTimerEl = document.getElementById('scoring-timer');
+    if (scoringTimerInterval) clearInterval(scoringTimerInterval);
+    
+    if (scoringTimeout && scoringTimeout > 0) {
+        // Show and start scoring timer
+        scoringTimeLeft = scoringTimeout;
+        scoringTimerEl.innerText = scoringTimeLeft;
+        scoringTimerEl.classList.remove('hidden', 'warning');
+        document.body.classList.add('rush-mode');
+        
+        scoringTimerInterval = setInterval(() => {
+            scoringTimeLeft--;
+            scoringTimerEl.innerText = scoringTimeLeft;
+            
+            if (scoringTimeLeft <= 10 && scoringTimeLeft > 0) {
+                Sound.tick();
+                scoringTimerEl.classList.add('warning');
+            }
+            
+            if (scoringTimeLeft <= 0) {
+                clearInterval(scoringTimerInterval);
+                scoringTimerInterval = null;
+                document.body.classList.remove('rush-mode');
+                // Auto-submit scores
+                submitScores();
+            }
+        }, 1000);
+    } else {
+        // Hide timer if not timed
+        scoringTimerEl.classList.add('hidden');
+        document.body.classList.remove('rush-mode');
+    }
 
     const pIds = Object.keys(players);
     const opponents = pIds.filter(id => id !== myPlayerId);
@@ -775,6 +863,14 @@ function renderScoreControls(category, targetPlayerId) {
 }
 
 function submitScores() {
+    // Clear scoring timer if running
+    if (scoringTimerInterval) {
+        clearInterval(scoringTimerInterval);
+        scoringTimerInterval = null;
+    }
+    document.body.classList.remove('rush-mode');
+    document.getElementById('scoring-timer').classList.add('hidden');
+    
     const scores = {};
     document.querySelectorAll('.score-control').forEach(ctrl => {
         const cat = ctrl.dataset.cat;
@@ -791,6 +887,15 @@ function submitScores() {
 
 function showRoundResults(payload) {
     showScreen('results');
+    
+    // Clear scoring timer if running
+    if (scoringTimerInterval) {
+        clearInterval(scoringTimerInterval);
+        scoringTimerInterval = null;
+    }
+    document.body.classList.remove('rush-mode');
+    document.getElementById('scoring-timer').classList.add('hidden');
+    
     const roundScores = payload.round_scores;
     const totalScores = payload.cumulative_scores;
 
@@ -933,6 +1038,26 @@ window.addEventListener('DOMContentLoaded', () => {
     document.getElementById('config-precise-scoring').addEventListener('change', (e) => {
         if (isHost) {
             send("UPDATE_SETTINGS", { precise_scoring: e.target.checked });
+        }
+    });
+
+    document.getElementById('config-scoring-timer-enabled').addEventListener('change', (e) => {
+        const timerInput = document.getElementById('config-scoring-timer');
+        timerInput.disabled = !e.target.checked;
+        
+        if (isHost) {
+            if (e.target.checked) {
+                send("UPDATE_SETTINGS", { scoring_timeout_seconds: parseInt(timerInput.value) || 30 });
+            } else {
+                send("UPDATE_SETTINGS", { scoring_timeout_seconds: 0 }); // 0 means disabled
+            }
+        }
+    });
+
+    document.getElementById('config-scoring-timer').addEventListener('change', (e) => {
+        const enabled = document.getElementById('config-scoring-timer-enabled').checked;
+        if (isHost && enabled) {
+            send("UPDATE_SETTINGS", { scoring_timeout_seconds: parseInt(e.target.value) || 30 });
         }
     });
 

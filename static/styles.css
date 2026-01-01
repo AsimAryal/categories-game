@@ -617,3 +617,27 @@ body.dark-mode .modal-content p {
 .text-btn:hover {
     opacity: 0.8;
 }
+
+/* SCORING HEADER */
+.scoring-header {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 10px;
+}
+
+.scoring-header h2 {
+    margin: 0;
+}
+
+#scoring-timer {
+    font-size: 20px;
+    padding: 4px 10px;
+}
+
+#scoring-timer.warning {
+    color: #fff;
+    background-color: var(--accent-color);
+    animation: pulse 1s infinite;
+}

@@ -388,10 +388,14 @@ class GameManager:
         if len(connected_submitted) >= len(connected_ids) and len(connected_ids) > 0:
             # All connected players submitted - transition to scoring
             room.state = GameState.SCORING
-            room.scoring_deadline = time.time() + self.SCORING_TIMEOUT
+            # Only set deadline if timed scoring is enabled
+            if room.scoring_timeout_seconds:
+                room.scoring_deadline = time.time() + room.scoring_timeout_seconds
+            else:
+                room.scoring_deadline = None  # No timeout
             
             await self._persist_room(room)
-            return {"all_submitted": True, "opponent_submitted": False}
+            return {"all_submitted": True, "opponent_submitted": False, "scoring_timeout_seconds": room.scoring_timeout_seconds}
         
         await self._persist_room(room)
         return {"all_submitted": False, "opponent_submitted": True}
@@ -505,7 +509,8 @@ class GameManager:
         self, 
         room_code: str, 
         rush_seconds: Optional[int] = None,
-        precise_scoring: Optional[bool] = None
+        precise_scoring: Optional[bool] = None,
+        scoring_timeout_seconds: Optional[int] = None
     ) -> Optional[Room]:
         """Update room settings and persist."""
         room = self.rooms.get(room_code)
@@ -516,6 +521,9 @@ class GameManager:
             room.rush_seconds = max(5, rush_seconds)
         if precise_scoring is not None:
             room.precise_scoring = precise_scoring
+        if scoring_timeout_seconds is not None:
+            # 0 or negative means disabled (None), otherwise set the value
+            room.scoring_timeout_seconds = max(10, scoring_timeout_seconds) if scoring_timeout_seconds > 0 else None
             
         await self._persist_room(room)
         return room
@@ -593,10 +601,10 @@ class GameManager:
         return remaining
     
     def get_scoring_remaining_time(self, room_code: str) -> int:
-        """Get remaining time for scoring phase."""
+        """Get remaining time for scoring phase. Returns 0 if not timed."""
         room = self.rooms.get(room_code)
         if not room or not room.scoring_deadline:
-            return self.SCORING_TIMEOUT
+            return 0  # Not timed or no deadline set
         
         remaining = max(0, int(room.scoring_deadline - time.time()))
         return remaining

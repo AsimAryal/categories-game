@@ -202,6 +202,12 @@
                     <input type="checkbox" id="config-precise-scoring" style="width: auto; margin: 0;">
                     <small style="color: #888; margin-left: 8px;">(Decimal scores)</small>
                 </div>
+                <div class="config-row">
+                    <label for="config-scoring-timer">Timed Scoring:</label>
+                    <input type="checkbox" id="config-scoring-timer-enabled" style="width: auto; margin: 0;">
+                    <input type="number" id="config-scoring-timer" value="30" min="10" max="120" style="width: 80px;" disabled>
+                    <small style="color: #888; margin-left: 8px;">sec</small>
+                </div>
                 <button id="btn-start-game" class="primary-btn">Start Game</button>
             </div>
             <div id="waiting-msg" class="hidden">Waiting for host to start...</div>
@@ -227,7 +233,10 @@
 
         <!-- SCORING SCREEN -->
         <section id="scoring-screen" class="screen hidden">
-            <h2>Scoring</h2>
+            <div class="scoring-header">
+                <h2>Scoring</h2>
+                <div id="scoring-timer" class="timer hidden">30</div>
+            </div>
             <p id="scoring-subtitle">Rate the answers!</p>
             <div id="scoring-container">
                 <!-- Scoring rows inserted here -->
