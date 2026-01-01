@@ -381,7 +381,9 @@ async def handle_websocket(websocket: WebSocket):
                                 "session_token": player.session_token,
                                 "players": [_player_to_dict(p) for p in room.players.values()],
                                 "settings": {
-                                    "precise_scoring": room.precise_scoring
+                                    "precise_scoring": room.precise_scoring,
+                                    "rush_seconds": room.rush_seconds,
+                                    "scoring_timeout_seconds": room.scoring_timeout_seconds
                                 }
                             }
                         }, websocket)
@@ -500,18 +502,20 @@ async def handle_websocket(websocket: WebSocket):
                         log_game_event(
                             room_code,
                             "✅ ALL ANSWERS SUBMITTED",
-                            "Moving to scoring phase"
+                            f"Moving to scoring phase (timed: {room.scoring_timeout_seconds is not None}, timeout: {room.scoring_timeout_seconds}s)"
                         )
                         
-                        # Schedule scoring timeout
-                        manager.schedule_scoring_timeout(room_code, game_manager.SCORING_TIMEOUT)
+                        # Only schedule timeout if timed scoring is enabled
+                        if room.scoring_timeout_seconds:
+                            manager.schedule_scoring_timeout(room_code, room.scoring_timeout_seconds)
                         
                         await _broadcast_to_room(room, {
                             "type": MessageType.ROUND_ENDED.value,
                             "payload": {
                                 "round": room.current_round.model_dump(),
                                 "players": {pid: _player_to_dict(p) for pid, p in room.players.items()},
-                                "scoring_deadline": room.scoring_deadline
+                                "scoring_deadline": room.scoring_deadline,
+                                "scoring_timeout_seconds": room.scoring_timeout_seconds  # None if not timed
                             }
                         })
                 
@@ -621,18 +625,20 @@ async def handle_websocket(websocket: WebSocket):
                     
                     rush = payload.get("rush_seconds")
                     precise = payload.get("precise_scoring")
+                    scoring_timeout = payload.get("scoring_timeout_seconds")
                     
                     room = await game_manager.update_settings(
                         room_code,
                         rush_seconds=int(rush) if rush is not None else None,
-                        precise_scoring=precise if precise is not None else None
+                        precise_scoring=precise if precise is not None else None,
+                        scoring_timeout_seconds=int(scoring_timeout) if scoring_timeout is not None else None
                     )
                     
                     if room:
                         log_game_event(
                             room_code,
                             "⚙️ SETTINGS UPDATED",
-                            f"Rush: {room.rush_seconds}s | Precise: {room.precise_scoring}"
+                            f"Rush: {room.rush_seconds}s | Precise: {room.precise_scoring} | ScoringTimeout: {room.scoring_timeout_seconds}"
                         )
                         await _broadcast_room_state(room)
                 
@@ -761,7 +767,8 @@ async def _build_reconnect_state(room, player) -> dict:
         "players": [_player_to_dict(p) for p in room.players.values()],
         "settings": {
             "rush_seconds": room.rush_seconds,
-            "precise_scoring": room.precise_scoring
+            "precise_scoring": room.precise_scoring,
+            "scoring_timeout_seconds": room.scoring_timeout_seconds
         }
     }
     
@@ -783,6 +790,8 @@ async def _build_reconnect_state(room, player) -> dict:
             base_state["scoring_remaining"] = game_manager.get_scoring_remaining_time(room.code)
             # Include if player already submitted scores
             base_state["scores_submitted"] = player.id in room.current_round.scoring_votes
+            # Include scoring_timeout_seconds for timer display
+            base_state["scoring_timeout_seconds"] = room.scoring_timeout_seconds
     
     elif room.state == GameState.ROUND_RESULTS:
         if room.current_round:
@@ -829,7 +838,9 @@ async def _broadcast_room_state(room):
             "room_code": room.code,
             "players": [_player_to_dict(p) for p in room.players.values()],
             "settings": {
-                "precise_scoring": room.precise_scoring
+                "precise_scoring": room.precise_scoring,
+                "rush_seconds": room.rush_seconds,
+                "scoring_timeout_seconds": room.scoring_timeout_seconds
             }
         }
     })

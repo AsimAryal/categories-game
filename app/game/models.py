@@ -114,6 +114,7 @@ class Room(BaseModel):
     
     # Lobby settings
     precise_scoring: bool = False  # Optional float scoring
+    scoring_timeout_seconds: Optional[int] = None  # None = not timed, else seconds
     
     # Track join order for host migration
     next_join_order: int = 0
