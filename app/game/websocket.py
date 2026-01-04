@@ -1,16 +1,13 @@
-"""
-WebSocket handler with reconnection and session management.
-Rich logging for game events.
-"""
-
-from fastapi import WebSocket, WebSocketDisconnect
-from typing import Dict, List, Optional
 import json
 import logging
 import asyncio
 from datetime import datetime
+from typing import Dict, List, Optional
+
+from fastapi import WebSocket, WebSocketDisconnect
+
 from .models import (
-    MessageType, BaseMessage, JoinGamePayload, RejoinGamePayload,
+    MessageType, JoinGamePayload, RejoinGamePayload,
     SubmitAnswersPayload, ScorePayload, GameState
 )
 from .manager import game_manager
@@ -18,12 +15,7 @@ from .manager import game_manager
 logger = logging.getLogger("uvicorn.error")
 
 
-# ============================================================================
-# LOGGING HELPERS
-# ============================================================================
-
 def log_game_event(room_code: str, event: str, details: str = "", level: str = "info"):
-    """Log a game event with consistent formatting."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     room_tag = f"[{room_code}]" if room_code else "[LOBBY]"
     message = f"🎮 {timestamp} {room_tag} {event}"
@@ -39,7 +31,6 @@ def log_game_event(room_code: str, event: str, details: str = "", level: str = "
 
 
 def log_connection(event: str, ip: str, player_name: str = "", room_code: str = "", details: str = ""):
-    """Log connection-related events."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     room_tag = f"[{room_code}]" if room_code else "[---]"
     player_part = f"Player: '{player_name}' | " if player_name else ""
@@ -50,7 +41,6 @@ def log_connection(event: str, ip: str, player_name: str = "", room_code: str = 
 
 
 def log_action(room_code: str, player_name: str, action: str, details: str = ""):
-    """Log player actions within a game."""
     timestamp = datetime.now().strftime("%H:%M:%S")
     message = f"⚡ {timestamp} [{room_code}] {action} | Player: '{player_name}'"
     if details:
@@ -59,9 +49,7 @@ def log_action(room_code: str, player_name: str, action: str, details: str = "")
 
 
 def get_client_ip(websocket: WebSocket) -> str:
-    """Extract client IP from WebSocket."""
     try:
-        # Try to get forwarded IP first (for reverse proxy setups)
         forwarded = websocket.headers.get("x-forwarded-for")
         if forwarded:
             return forwarded.split(",")[0].strip()
@@ -73,16 +61,7 @@ def get_client_ip(websocket: WebSocket) -> str:
         return "unknown"
 
 
-# ============================================================================
-# CONNECTION MANAGER
-# ============================================================================
-
 class ConnectionManager:
-    """
-    Manages WebSocket connections with session-aware tracking.
-    Supports session hijacking detection for duplicate tabs.
-    """
-    
     def __init__(self):
         # player_id -> WebSocket
         self.active_connections: Dict[str, WebSocket] = {}
@@ -93,90 +72,73 @@ class ConnectionManager:
         # Background task handle
         self._cleanup_task: Optional[asyncio.Task] = None
         self._scoring_timeout_tasks: Dict[str, asyncio.Task] = {}
-    
+
     async def connect(self, websocket: WebSocket):
-        """Accept new WebSocket connection."""
         await websocket.accept()
-    
+
     def register_player(
-        self, 
-        player_id: str, 
-        session_token: str, 
+        self,
+        player_id: str,
+        session_token: str,
         websocket: WebSocket,
         ip: str
     ) -> Optional[WebSocket]:
-        """
-        Register a player's WebSocket.
-        Returns old WebSocket if session was hijacked (same session, new connection).
-        """
         old_socket = None
-        
-        # Check for session hijack (same session token connecting again)
         if session_token in self.session_connections:
             old_player_id = self.session_connections[session_token]
             if old_player_id in self.active_connections:
                 old_socket = self.active_connections[old_player_id]
                 # Remove old connection
                 del self.active_connections[old_player_id]
-        
-        # Register new connection
+
         self.active_connections[player_id] = websocket
         self.session_connections[session_token] = player_id
         self.player_ips[player_id] = ip
         
         return old_socket
-    
+
     def disconnect(self, player_id: str):
-        """Remove a player's WebSocket connection."""
         if player_id in self.active_connections:
             del self.active_connections[player_id]
-    
+
     def get_player_ip(self, player_id: str) -> str:
-        """Get stored IP for a player."""
         return self.player_ips.get(player_id, "unknown")
-    
+
     async def send_personal_message(self, message: dict, websocket: WebSocket):
-        """Send message to a specific WebSocket."""
         try:
             await websocket.send_json(message)
-        except Exception as e:
-            logger.debug(f"Failed to send message: {e}")
-    
+        except Exception:
+            pass
+
     async def send_to_player(self, message: dict, player_id: str):
-        """Send message to a player by ID."""
         if player_id in self.active_connections:
             try:
                 await self.active_connections[player_id].send_json(message)
             except Exception:
                 pass
-    
+
     async def broadcast(self, message: dict, player_ids: List[str]):
-        """Broadcast message to multiple players."""
         for pid in player_ids:
             await self.send_to_player(message, pid)
-    
+
     async def broadcast_games_list(self):
-        """Broadcast updated games list to all connected clients."""
         rooms = game_manager.get_open_rooms()
         message = {
             "type": MessageType.GAMES_LIST.value,
             "payload": {"games": rooms}
         }
-        # Broadcast to all connected clients
         for socket in self.active_connections.values():
             try:
                 await socket.send_json(message)
             except Exception:
                 pass
-    
+
     def start_background_tasks(self):
-        """Start background cleanup tasks."""
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             log_game_event("", "🧹 Background cleanup task started", "Interval: 30s")
-    
+
     async def _cleanup_loop(self):
-        """Periodic cleanup of disconnected players."""
         while True:
             try:
                 await asyncio.sleep(30)  # Check every 30 seconds
@@ -185,10 +147,8 @@ class ConnectionManager:
                 break
             except Exception as e:
                 logger.error(f"Cleanup error: {e}")
-    
+
     def schedule_scoring_timeout(self, room_code: str, timeout_seconds: int):
-        """Schedule a scoring timeout for a room."""
-        # Cancel existing timeout for this room
         if room_code in self._scoring_timeout_tasks:
             self._scoring_timeout_tasks[room_code].cancel()
         
@@ -198,14 +158,12 @@ class ConnectionManager:
         
         self._scoring_timeout_tasks[room_code] = asyncio.create_task(timeout_handler())
         log_game_event(room_code, "⏱️ Scoring timeout scheduled", f"{timeout_seconds}s")
-    
+
     async def _handle_scoring_timeout(self, room_code: str):
-        """Handle scoring timeout - force finalize and broadcast results."""
         room = game_manager.rooms.get(room_code)
         if not room or room.state != GameState.SCORING:
             return
         
-        # Find who didn't submit
         submitted = set(room.current_round.scoring_votes.keys())
         not_submitted = [
             room.players[pid].name 
@@ -237,9 +195,8 @@ class ConnectionManager:
                     "timeout": True
                 }
             })
-    
+
     def cancel_scoring_timeout(self, room_code: str):
-        """Cancel a scheduled scoring timeout."""
         if room_code in self._scoring_timeout_tasks:
             self._scoring_timeout_tasks[room_code].cancel()
             del self._scoring_timeout_tasks[room_code]
@@ -248,12 +205,7 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-# ============================================================================
-# MAIN WEBSOCKET HANDLER
-# ============================================================================
-
 async def handle_websocket(websocket: WebSocket):
-    """Main WebSocket handler with reconnection support."""
     await manager.connect(websocket)
     manager.start_background_tasks()
     
@@ -262,9 +214,7 @@ async def handle_websocket(websocket: WebSocket):
     room_code = None
     session_token = None
     player_name = None
-    
-    # Note: We don't log player name here - it's unknown until JOIN_GAME/REJOIN_GAME
-    
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -314,14 +264,21 @@ async def handle_websocket(websocket: WebSocket):
                             "payload": state_payload
                         }, websocket)
                         
-                        # Notify other players
+                        # Notify other players with game state
                         other_ids = [pid for pid in room.players.keys() if pid != player_id]
+                        reconnect_payload = {
+                            "player_id": player_id,
+                            "player_name": player.name,
+                            "connected_count": len(room.connected_players)
+                        }
+                        # Add submission info if in playing state
+                        if room.state == GameState.PLAYING and room.current_round:
+                            connected_ids = set(room.connected_players.keys())
+                            reconnect_payload["submitted_count"] = len([pid for pid in room.current_round.answers if pid in connected_ids])
+                        
                         await manager.broadcast({
                             "type": MessageType.PLAYER_RECONNECTED.value,
-                            "payload": {
-                                "player_id": player_id,
-                                "player_name": player.name
-                            }
+                            "payload": reconnect_payload
                         }, other_ids)
                     else:
                         log_connection(
@@ -383,7 +340,8 @@ async def handle_websocket(websocket: WebSocket):
                                 "settings": {
                                     "precise_scoring": room.precise_scoring,
                                     "rush_seconds": room.rush_seconds,
-                                    "scoring_timeout_seconds": room.scoring_timeout_seconds
+                                    "scoring_timeout_seconds": room.scoring_timeout_seconds,
+                                    "round_duration_seconds": room.round_duration_seconds
                                 }
                             }
                         }, websocket)
@@ -437,7 +395,7 @@ async def handle_websocket(websocket: WebSocket):
                         log_game_event(
                             room_code,
                             f"🎬 ROUND {new_round.round_number} STARTED",
-                            f"Letter: {new_round.letter} | Players: {', '.join(player_names)} | Rush: {rush_sec}s"
+                            f"Letter: {new_round.letter} | Players: {', '.join(player_names)} | Rush: {rush_sec}s | Duration: {room.round_duration_seconds}s"
                         )
                         
                         await _broadcast_to_room(room, {
@@ -445,7 +403,9 @@ async def handle_websocket(websocket: WebSocket):
                             "payload": {
                                 **new_round.model_dump(),
                                 "rush_seconds": room.rush_seconds,
-                                "server_time": room.round_start_time
+                                "round_duration_seconds": room.round_duration_seconds,
+                                "server_time": room.round_start_time,
+                                "total_players": len(room.connected_players)
                             }
                         })
                         await manager.broadcast_games_list()
@@ -523,13 +483,26 @@ async def handle_websocket(websocket: WebSocket):
                 elif msg_type == MessageType.SUBMIT_SCORES.value:
                     if not room_code or not player_id:
                         continue
-                    
+
                     req = ScorePayload(**payload)
-                    
                     log_action(room_code, player_name, "🗳️ SUBMITTED SCORES")
-                    
+
+                    room = game_manager.rooms.get(room_code)
                     finished = await game_manager.submit_scores(room_code, player_id, req.scores)
-                    
+
+                    if not finished and room:
+                        connected_ids = list(room.connected_players.keys())
+                        submitted_ids = list(room.current_round.scoring_votes.keys())
+                        await manager.broadcast({
+                            "type": MessageType.SCORING_UPDATE.value,
+                            "payload": {
+                                "player_id": player_id,
+                                "player_name": player_name,
+                                "submitted_ids": submitted_ids,
+                                "total_players": len(connected_ids)
+                            }
+                        }, [pid for pid in connected_ids if pid != player_id])
+
                     if finished:
                         manager.cancel_scoring_timeout(room_code)
                         room = game_manager.rooms[room_code]
@@ -586,7 +559,9 @@ async def handle_websocket(websocket: WebSocket):
                             "payload": {
                                 **new_round.model_dump(),
                                 "rush_seconds": room.rush_seconds,
-                                "server_time": room.round_start_time
+                                "round_duration_seconds": room.round_duration_seconds,
+                                "server_time": room.round_start_time,
+                                "total_players": len(room.connected_players)
                             }
                         })
                 
@@ -626,19 +601,21 @@ async def handle_websocket(websocket: WebSocket):
                     rush = payload.get("rush_seconds")
                     precise = payload.get("precise_scoring")
                     scoring_timeout = payload.get("scoring_timeout_seconds")
+                    round_duration = payload.get("round_duration_seconds")
                     
                     room = await game_manager.update_settings(
                         room_code,
                         rush_seconds=int(rush) if rush is not None else None,
                         precise_scoring=precise if precise is not None else None,
-                        scoring_timeout_seconds=int(scoring_timeout) if scoring_timeout is not None else None
+                        scoring_timeout_seconds=int(scoring_timeout) if scoring_timeout is not None else None,
+                        round_duration_seconds=int(round_duration) if round_duration is not None else None
                     )
                     
                     if room:
                         log_game_event(
                             room_code,
                             "⚙️ SETTINGS UPDATED",
-                            f"Rush: {room.rush_seconds}s | Precise: {room.precise_scoring} | ScoringTimeout: {room.scoring_timeout_seconds}"
+                            f"Rush: {room.rush_seconds}s | Precise: {room.precise_scoring} | ScoringTimeout: {room.scoring_timeout_seconds} | RoundDuration: {room.round_duration_seconds}s"
                         )
                         await _broadcast_room_state(room)
                 
@@ -656,13 +633,10 @@ async def handle_websocket(websocket: WebSocket):
                         manager.disconnect(player_id)
                         
                         if remaining_room:
-                            # Check if host migration needed
                             if was_host:
                                 new_host = remaining_room.get_next_host()
                                 if new_host:
                                     new_host.is_host = True
-                                    
-                                    # PERSIST host change to database!
                                     await game_manager._persist_player(new_host, room_code)
                                     await game_manager._persist_room(remaining_room)
                                     
@@ -679,14 +653,19 @@ async def handle_websocket(websocket: WebSocket):
                                         }
                                     }, list(remaining_room.connected_players.keys()))
                             
-                            # Notify remaining players
+                            disconnect_payload = {
+                                "player_id": player_id,
+                                "player_name": player_name,
+                                "left_intentionally": True,
+                                "connected_count": len(remaining_room.connected_players)
+                            }
+                            if remaining_room.state == GameState.PLAYING and remaining_room.current_round:
+                                connected_ids = set(remaining_room.connected_players.keys())
+                                disconnect_payload["submitted_count"] = len([pid for pid in remaining_room.current_round.answers if pid in connected_ids])
+                            
                             await manager.broadcast({
                                 "type": MessageType.PLAYER_DISCONNECTED.value,
-                                "payload": {
-                                    "player_id": player_id,
-                                    "player_name": player_name,
-                                    "left_intentionally": True
-                                }
+                                "payload": disconnect_payload
                             }, list(remaining_room.connected_players.keys()))
                             
                             await _broadcast_room_state(remaining_room)
@@ -700,9 +679,7 @@ async def handle_websocket(websocket: WebSocket):
                         player_name = None
                 
             except Exception as e:
-                logger.error(f"❌ WebSocket Error [{room_code or 'NO_ROOM'}]: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.exception(f"WebSocket Error [{room_code or 'NO_ROOM'}]: {e}")
     
     except WebSocketDisconnect:
         if player_id:
@@ -720,12 +697,20 @@ async def handle_websocket(websocket: WebSocket):
                 # Notify others about disconnect
                 other_ids = [pid for pid in room.connected_players.keys() if pid != player_id]
                 
+                # Include game state for sync
+                disconnect_payload = {
+                    "player_id": player_id,
+                    "player_name": disconnected.name,
+                    "connected_count": len(room.connected_players)
+                }
+                # Add submission info if in playing state
+                if room.state == GameState.PLAYING and room.current_round:
+                    connected_ids = set(room.connected_players.keys())
+                    disconnect_payload["submitted_count"] = len([pid for pid in room.current_round.answers if pid in connected_ids])
+                
                 await manager.broadcast({
                     "type": MessageType.PLAYER_DISCONNECTED.value,
-                    "payload": {
-                        "player_id": player_id,
-                        "player_name": disconnected.name
-                    }
+                    "payload": disconnect_payload
                 }, other_ids)
                 
                 # Notify about host change
@@ -752,12 +737,7 @@ async def handle_websocket(websocket: WebSocket):
             log_connection("❌ DISCONNECTED (no room)", client_ip)
 
 
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
 async def _build_reconnect_state(room, player) -> dict:
-    """Build full state payload for reconnection."""
     base_state = {
         "room_code": room.code,
         "game_state": room.state.value,
@@ -768,7 +748,8 @@ async def _build_reconnect_state(room, player) -> dict:
         "settings": {
             "rush_seconds": room.rush_seconds,
             "precise_scoring": room.precise_scoring,
-            "scoring_timeout_seconds": room.scoring_timeout_seconds
+            "scoring_timeout_seconds": room.scoring_timeout_seconds,
+            "round_duration_seconds": room.round_duration_seconds
         }
     }
     
@@ -780,6 +761,10 @@ async def _build_reconnect_state(room, player) -> dict:
         if room.current_round:
             base_state["round"] = room.current_round.model_dump()
             base_state["remaining_time"] = game_manager.get_remaining_time(room.code)
+            base_state["round_duration_seconds"] = room.round_duration_seconds
+            connected_ids = set(room.connected_players.keys())
+            base_state["total_players"] = len(connected_ids)
+            base_state["submitted_count"] = len([pid for pid in room.current_round.answers if pid in connected_ids])
             # Include player's own submitted answers if any
             if player.id in room.current_round.answers:
                 base_state["my_answers"] = room.current_round.answers[player.id]
@@ -814,7 +799,6 @@ async def _build_reconnect_state(room, player) -> dict:
 
 
 def _player_to_dict(player) -> dict:
-    """Convert player to serializable dict for frontend."""
     return {
         "id": player.id,
         "name": player.name,
@@ -825,13 +809,11 @@ def _player_to_dict(player) -> dict:
 
 
 async def _broadcast_to_room(room, message):
-    """Broadcast message to all connected players in a room."""
     player_ids = list(room.connected_players.keys())
     await manager.broadcast(message, player_ids)
 
 
 async def _broadcast_room_state(room):
-    """Broadcast current lobby/room state to all players."""
     await _broadcast_to_room(room, {
         "type": MessageType.LOBBY_UPDATE.value,
         "payload": {
@@ -840,7 +822,8 @@ async def _broadcast_room_state(room):
             "settings": {
                 "precise_scoring": room.precise_scoring,
                 "rush_seconds": room.rush_seconds,
-                "scoring_timeout_seconds": room.scoring_timeout_seconds
+                "scoring_timeout_seconds": room.scoring_timeout_seconds,
+                "round_duration_seconds": room.round_duration_seconds
             }
         }
     })

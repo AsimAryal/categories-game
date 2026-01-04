@@ -28,7 +28,7 @@
     <!-- PWA Manifest -->
     <link rel="manifest" href="/manifest.json">
     
-    <link rel="stylesheet" href="/static/styles.css?v=5">
+    <link rel="stylesheet" href="/static/styles.css?v=11">
     
     <!-- Install Banner Styles -->
     <style>
@@ -135,6 +135,9 @@
 
         <!-- DARK MODE TOGGLE -->
         <button id="theme-toggle" class="theme-btn" aria-label="Toggle Dark Mode">🌙</button>
+        
+        <!-- SOUND TOGGLE -->
+        <button id="sound-toggle" class="sound-btn" aria-label="Toggle Sound">🔊</button>
 
         <!-- NAME ENTRY MODAL -->
         <div id="name-modal" class="modal hidden">
@@ -148,7 +151,10 @@
 
         <!-- LOBBY SCREEN -->
         <section id="lobby-screen" class="screen">
-            <h1>Categories</h1>
+            <div class="app-title">
+                <h1>Categories</h1>
+                <p class="app-subtitle">The word guessing party game</p>
+            </div>
             
             <!-- Player Greeting -->
             <div id="player-greeting" class="greeting-bar">
@@ -165,22 +171,23 @@
             <!-- Join Tab -->
             <div id="tab-join" class="tab-content active">
                 <div id="games-list-container" class="card hidden">
-                    <h2>Available Games</h2>
+                    <h3 class="card-title">Available Games</h3>
                     <div id="games-list"></div>
                 </div>
                 
                 <div class="card">
-                    <h3>Join with Code</h3>
-                    <input type="text" id="join-code" placeholder="Room Code" style="text-transform: uppercase;">
+                    <h3 class="card-title">Join with Code</h3>
+                    <input type="text" id="join-code" placeholder="Enter room code" class="input-uppercase">
                     <button id="btn-join">Join Game</button>
                 </div>
             </div>
             
             <!-- Host Tab -->
             <div id="tab-host" class="tab-content">
-                <div class="card">
-                    <h2>Create a New Game</h2>
-                    <p style="color: #888; margin-bottom: 16px;">Start your own game and invite friends!</p>
+                <div class="card card-featured">
+                    <div class="card-icon">🎯</div>
+                    <h2 class="card-title">Create a New Game</h2>
+                    <p class="card-description">Start your own game and invite friends!</p>
                     <button id="btn-host">Host New Game</button>
                 </div>
             </div>
@@ -188,34 +195,99 @@
 
         <!-- WAITING ROOM (LOBBY AFTER JOIN) -->
         <section id="waiting-screen" class="screen hidden">
-            <h1>Room: <span id="display-room-code"></span></h1>
-            <div id="player-list">
-                <!-- Players inserted here -->
+            <div class="room-header">
+                <div class="room-code-display">
+                    <span class="room-code-label">Room Code</span>
+                    <span id="display-room-code" class="room-code-value"></span>
+                </div>
             </div>
+            
+            <div class="players-section">
+                <h3 class="section-title">Players</h3>
+                <div id="player-list">
+                    <!-- Players inserted here -->
+                </div>
+            </div>
+            
             <div id="host-controls" class="hidden">
+                <h3 class="settings-title">Game Settings</h3>
+                
                 <div class="config-row">
-                    <label>Rush Timer (sec):</label>
-                    <input type="number" id="config-rush-time" value="5" min="5" max="60" style="width: 80px;">
+                    <div class="config-label">
+                        <span class="config-label-text">Round Timer</span>
+                        <span class="config-label-hint">Time to answer each round</span>
+                    </div>
+                    <div class="config-value">
+                        <select id="config-round-duration">
+                            <option value="30">30 sec</option>
+                            <option value="45">45 sec</option>
+                            <option value="60" selected>60 sec</option>
+                            <option value="90">90 sec</option>
+                            <option value="120">120 sec</option>
+                        </select>
+                    </div>
                 </div>
+                
                 <div class="config-row">
-                    <label for="config-precise-scoring">Precise Scoring:</label>
-                    <input type="checkbox" id="config-precise-scoring" style="width: auto; margin: 0;">
-                    <small style="color: #888; margin-left: 8px;">(Decimal scores)</small>
+                    <div class="config-label">
+                        <span class="config-label-text">Rush Timer</span>
+                        <span class="config-label-hint">Countdown after first submit</span>
+                    </div>
+                    <div class="config-value">
+                        <input type="number" id="config-rush-time" value="5" min="5" max="60">
+                        <span class="unit">sec</span>
+                    </div>
                 </div>
+                
                 <div class="config-row">
-                    <label for="config-scoring-timer">Timed Scoring:</label>
-                    <input type="checkbox" id="config-scoring-timer-enabled" style="width: auto; margin: 0;">
-                    <input type="number" id="config-scoring-timer" value="30" min="10" max="120" style="width: 80px;" disabled>
-                    <small style="color: #888; margin-left: 8px;">sec</small>
+                    <div class="config-label">
+                        <span class="config-label-text">Precise Scoring</span>
+                        <span class="config-label-hint">Use decimal scores (averages)</span>
+                    </div>
+                    <div class="config-value">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="config-precise-scoring">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                 </div>
+                
+                <div class="config-row">
+                    <div class="config-label">
+                        <span class="config-label-text">Timed Scoring</span>
+                        <span class="config-label-hint">Auto-submit scores after timeout</span>
+                    </div>
+                    <div class="config-value">
+                        <input type="number" id="config-scoring-timer" value="30" min="10" max="120" disabled>
+                        <span class="unit">sec</span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="config-scoring-timer-enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                </div>
+                
                 <button id="btn-start-game" class="primary-btn">Start Game</button>
             </div>
-            <div id="waiting-msg" class="hidden">Waiting for host to start...</div>
-            <button id="btn-leave-game" class="secondary-btn" style="margin-top: 20px;">Leave Game</button>
+            
+            <div id="waiting-msg" class="waiting-message hidden">
+                <div class="waiting-icon">⏳</div>
+                <span>Waiting for host to start...</span>
+            </div>
+            
+            <button id="btn-leave-game" class="secondary-btn leave-btn">Leave Game</button>
         </section>
 
         <!-- TOAST CONTAINER -->
         <div id="toast-container"></div>
+        
+        <!-- COUNTDOWN OVERLAY -->
+        <div id="countdown-overlay" class="countdown-overlay hidden">
+            <div class="countdown-content">
+                <div id="countdown-letter" class="countdown-letter"></div>
+                <div id="countdown-number" class="countdown-number">3</div>
+            </div>
+        </div>
 
         <!-- GAME ROUND SCREEN -->
         <section id="game-screen" class="screen hidden">
@@ -223,12 +295,15 @@
                 <div class="letter-display">Letter: <span id="current-letter">?</span></div>
                 <div class="timer" id="timer">60</div>
             </div>
-            
+
             <div id="categories-container">
                 <!-- Categories inputs inserted here -->
             </div>
-            
-            <button id="btn-submit" class="floating-action-btn">Submit Answers</button>
+
+            <div class="floating-action-container">
+                <div id="submission-progress" class="submission-progress">0/0 submitted</div>
+                <button id="btn-submit" class="floating-action-btn">Submit Answers</button>
+            </div>
         </section>
 
         <!-- SCORING SCREEN -->
@@ -238,6 +313,15 @@
                 <div id="scoring-timer" class="timer hidden">30</div>
             </div>
             <p id="scoring-subtitle">Rate the answers!</p>
+            <div id="scoring-progress" class="scoring-progress">
+                <div class="scoring-progress-header" onclick="toggleScoringProgress()">
+                    <span id="scoring-progress-count">0/0 submitted</span>
+                    <span id="scoring-progress-arrow" class="progress-arrow">▼</span>
+                </div>
+                <div id="scoring-progress-details" class="scoring-progress-details hidden">
+                    <!-- Player status list inserted here -->
+                </div>
+            </div>
             <div id="scoring-container">
                 <!-- Scoring rows inserted here -->
             </div>
@@ -261,7 +345,7 @@
              <div id="waiting-next-round" class="hidden">Waiting for host...</div>
 
              <button id="btn-end-game" class="secondary-btn hidden">End Game</button>
-             <button id="btn-leave-results" class="secondary-btn" style="margin-top: 10px;">Leave Game</button>
+             <button id="btn-leave-results" class="secondary-btn">Leave Game</button>
         </section>
 
         <!-- FINAL RESULTS SCREEN -->
@@ -290,7 +374,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=5"></script>
+    <script src="/static/app.js?v=11"></script>
     
     <!-- PWA Install & Service Worker -->
     <script>
