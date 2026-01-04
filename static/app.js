@@ -9,12 +9,19 @@ const ROOM_CODE_KEY = 'game_room_code';
 // --- SOUND MANAGER ---
 const Sound = {
     ctx: null,
+    muted: localStorage.getItem('sound_muted') === 'true',
     init: function () {
         if (!this.ctx) {
             this.ctx = new (window.AudioContext || window.webkitAudioContext)();
         }
     },
+    toggleMute: function () {
+        this.muted = !this.muted;
+        localStorage.setItem('sound_muted', this.muted);
+        return this.muted;
+    },
     playTone: function (freq, type, duration, vol = 0.1) {
+        if (this.muted) return;
         if (!this.ctx) this.init();
         if (this.ctx.state === 'suspended') this.ctx.resume();
 
@@ -35,6 +42,7 @@ const Sound = {
     },
     tick: function () { this.playTone(800, 'sine', 0.1, 0.1); },
     alert: function () {
+        if (this.muted) return;
         if (!this.ctx) this.init();
         const osc = this.ctx.createOscillator();
         const gain = this.ctx.createGain();
@@ -53,17 +61,28 @@ const Sound = {
         osc.stop(this.ctx.currentTime + 0.5);
     },
     start: function () {
+        if (this.muted) return;
         this.playTone(440, 'sine', 0.1);
         setTimeout(() => this.playTone(660, 'sine', 0.2), 100);
         setTimeout(() => this.playTone(880, 'sine', 0.4), 200);
     },
     end: function () {
+        if (this.muted) return;
         this.playTone(300, 'square', 0.3, 0.2);
         setTimeout(() => this.playTone(200, 'square', 0.3, 0.2), 150);
     },
     reconnect: function () {
+        if (this.muted) return;
         this.playTone(523, 'sine', 0.15);
         setTimeout(() => this.playTone(659, 'sine', 0.15), 100);
+    },
+    countdown: function () {
+        if (this.muted) return;
+        this.playTone(440, 'sine', 0.15, 0.15);
+    },
+    countdownGo: function () {
+        if (this.muted) return;
+        this.playTone(880, 'sine', 0.3, 0.2);
     }
 };
 
@@ -75,11 +94,16 @@ let currentRoomCode = "";
 let currentRound = null;
 let timerInterval = null;
 let timeLeft = 60;
+let roundDuration = 60;  // Configurable round duration
+let totalPlayers = 0;
+let submittedCount = 0;
 let isHost = false;
 let isReconnecting = false;
 let gamesListInterval = null;
 let scoringTimerInterval = null;
 let scoringTimeLeft = 0;
+let scoringPlayers = {};  // {player_id: {name, submitted}}
+let scoringSubmittedIds = [];
 
 // --- DOM ELEMENTS ---
 const screens = {
@@ -130,7 +154,6 @@ function connect() {
     socket = new WebSocket(WS_URL);
 
     socket.onopen = () => {
-        console.log("Connected to WS");
         document.getElementById('status-bar').classList.add('hidden');
 
         // Check for existing session to reconnect
@@ -141,7 +164,6 @@ function connect() {
             document.getElementById('status-bar').classList.remove('hidden');
             send("REJOIN_GAME", { session_token: session.token });
         } else {
-            showToast("Connected to server", "success");
             send("GET_GAMES", {});
             startGamesListPolling();
         }
@@ -217,6 +239,10 @@ function handleMessage(msg) {
             setupScoring(payload);
             break;
 
+        case "SCORING_UPDATE":
+            handleScoringUpdate(payload);
+            break;
+
         case "ROUND_RESULTS":
             showRoundResults(payload);
             break;
@@ -251,11 +277,27 @@ function handleMessage(msg) {
 
         case "PLAYER_DISCONNECTED":
             showToast(`${payload.player_name} disconnected`, "info");
+            // Sync submission progress if server sent it
+            if (payload.connected_count !== undefined) {
+                totalPlayers = payload.connected_count;
+            }
+            if (payload.submitted_count !== undefined) {
+                submittedCount = payload.submitted_count;
+            }
+            updateSubmissionProgress();
             break;
 
         case "PLAYER_RECONNECTED":
             showToast(`${payload.player_name} reconnected!`, "success");
             Sound.reconnect();
+            // Sync submission progress if server sent it
+            if (payload.connected_count !== undefined) {
+                totalPlayers = payload.connected_count;
+            }
+            if (payload.submitted_count !== undefined) {
+                submittedCount = payload.submitted_count;
+            }
+            updateSubmissionProgress();
             break;
 
         case "HOST_CHANGED":
@@ -338,8 +380,16 @@ function handleReconnected(payload) {
 function restorePlayingState(payload) {
     const roundData = payload.round;
     currentRound = roundData;
+    
+    // Restore round duration and submission progress
+    roundDuration = payload.round_duration_seconds || 60;
+    totalPlayers = payload.total_players || 1;
+    submittedCount = payload.submitted_count || 0;
 
     document.getElementById('current-letter').innerText = roundData.letter;
+    
+    // Update submission progress
+    updateSubmissionProgress();
 
     const container = document.getElementById('categories-container');
     container.innerHTML = '';
@@ -359,7 +409,7 @@ function restorePlayingState(payload) {
     });
 
     // Restore timer from server time
-    timeLeft = payload.remaining_time || 60;
+    timeLeft = payload.remaining_time || roundDuration;
     const timerEl = document.getElementById('timer');
     timerEl.innerText = timeLeft;
     timerEl.classList.remove('warning');
@@ -576,6 +626,11 @@ function updateLobby(payload) {
         span.className = 'player-tag';
         span.innerText = p.name;
 
+        // Show host status
+        if (p.is_host) {
+            span.classList.add('is-host');
+        }
+
         // Show connection status
         if (!p.is_connected) {
             span.classList.add('disconnected');
@@ -595,6 +650,7 @@ function updateLobby(payload) {
         const preciseInput = document.getElementById('config-precise-scoring');
         const scoringTimerEnabled = document.getElementById('config-scoring-timer-enabled');
         const scoringTimerInput = document.getElementById('config-scoring-timer');
+        const roundDurationSelect = document.getElementById('config-round-duration');
 
         if (rushInput && payload.settings.rush_seconds !== undefined && document.activeElement !== rushInput) {
             rushInput.value = payload.settings.rush_seconds;
@@ -609,6 +665,10 @@ function updateLobby(payload) {
             if (hasTimer && document.activeElement !== scoringTimerInput) {
                 scoringTimerInput.value = payload.settings.scoring_timeout_seconds;
             }
+        }
+        if (roundDurationSelect && payload.settings.round_duration_seconds !== undefined) {
+            roundDuration = payload.settings.round_duration_seconds;
+            roundDurationSelect.value = roundDuration;
         }
     }
 
@@ -651,9 +711,9 @@ function renderGamesList(games) {
         div.innerHTML = `
             <div class="game-info">
                 <span class="game-host">${game.host_name}'s Game</span>
-                <span style="color:#888; font-size:12px;">(${game.player_count}/5)</span>
+                <span class="game-players">${game.player_count}/5 players</span>
             </div>
-            <button style="width: auto; padding: 5px 10px; font-size: 12px;">Join</button>
+            <button>Join</button>
         `;
         div.addEventListener('click', () => {
             if (!myName) {
@@ -670,13 +730,72 @@ function renderGamesList(games) {
 }
 
 
+function showCountdown(letter, callback) {
+    const overlay = document.getElementById('countdown-overlay');
+    const letterEl = document.getElementById('countdown-letter');
+    const numberEl = document.getElementById('countdown-number');
+    
+    letterEl.innerText = `Letter: ${letter}`;
+    numberEl.innerText = '3';
+    numberEl.classList.remove('go');
+    overlay.classList.remove('hidden');
+    
+    let count = 3;
+    
+    const countdownTick = () => {
+        if (count > 0) {
+            numberEl.innerText = count;
+            numberEl.classList.remove('go');
+            // Re-trigger animation
+            numberEl.style.animation = 'none';
+            numberEl.offsetHeight; // Force reflow
+            numberEl.style.animation = 'countdownPop 0.8s ease-out';
+            Sound.countdown();
+            count--;
+            setTimeout(countdownTick, 1000);
+        } else {
+            // Show "GO!"
+            numberEl.innerText = 'GO!';
+            numberEl.classList.add('go');
+            numberEl.style.animation = 'none';
+            numberEl.offsetHeight;
+            numberEl.style.animation = 'countdownPop 0.8s ease-out';
+            Sound.countdownGo();
+            
+            setTimeout(() => {
+                overlay.classList.add('hidden');
+                callback();
+            }, 600);
+        }
+    };
+    
+    // Start countdown
+    setTimeout(countdownTick, 100);
+}
+
 function startRound(roundData) {
-    Sound.start();
     document.body.classList.remove('rush-mode');
     currentRound = roundData;
+    
+    // Get round duration and player count from server
+    roundDuration = roundData.round_duration_seconds || 60;
+    totalPlayers = roundData.total_players || 1;
+    submittedCount = 0;
+    
+    // Show countdown first, then start the actual round
+    showCountdown(roundData.letter, () => {
+        Sound.start();
+        actuallyStartRound(roundData);
+    });
+}
+
+function actuallyStartRound(roundData) {
     showScreen('game');
 
     document.getElementById('current-letter').innerText = roundData.letter;
+    
+    // Update submission progress
+    updateSubmissionProgress();
 
     const container = document.getElementById('categories-container');
     container.innerHTML = '';
@@ -690,13 +809,19 @@ function startRound(roundData) {
         `;
         container.appendChild(div);
     });
+    
+    // Auto-focus first input
+    const firstInput = container.querySelector('input');
+    if (firstInput) {
+        setTimeout(() => firstInput.focus(), 100);
+    }
 
     // Reset submit button
     document.getElementById('btn-submit').innerText = "Submit Answers";
     document.getElementById('btn-submit').disabled = false;
 
-    // Timer
-    timeLeft = 60;
+    // Timer - use configurable duration
+    timeLeft = roundDuration;
     const timerEl = document.getElementById('timer');
     timerEl.innerText = timeLeft;
     timerEl.classList.remove('warning');
@@ -719,6 +844,18 @@ function startRound(roundData) {
     }, 1000);
 }
 
+function updateSubmissionProgress() {
+    const progressEl = document.getElementById('submission-progress');
+    if (progressEl) {
+        progressEl.innerText = `${submittedCount}/${totalPlayers} submitted`;
+        if (submittedCount > 0 && submittedCount < totalPlayers) {
+            progressEl.classList.add('has-submissions');
+        } else {
+            progressEl.classList.remove('has-submissions');
+        }
+    }
+}
+
 function submitAnswers() {
     if (timerInterval) clearInterval(timerInterval);
 
@@ -729,6 +866,10 @@ function submitAnswers() {
     });
 
     send("SUBMIT_ANSWERS", { answers });
+    
+    // Update our own submission in the progress
+    submittedCount++;
+    updateSubmissionProgress();
 
     document.getElementById('btn-submit').innerText = "Submitted! Waiting...";
     document.getElementById('btn-submit').disabled = true;
@@ -737,6 +878,10 @@ function submitAnswers() {
 
 function handleOpponentSubmitted(payload) {
     const rushSec = payload.rush_seconds || 5;
+    
+    // Increment submission count (someone else submitted)
+    submittedCount++;
+    updateSubmissionProgress();
 
     if (timeLeft > rushSec) {
         Sound.alert();
@@ -791,10 +936,22 @@ function setupScoring(payload) {
             }
         }, 1000);
     } else {
-        // Hide timer if not timed
         scoringTimerEl.classList.add('hidden');
         document.body.classList.remove('rush-mode');
     }
+
+    // Initialize scoring progress
+    scoringPlayers = {};
+    scoringSubmittedIds = [];
+    Object.keys(players).forEach(pid => {
+        scoringPlayers[pid] = {
+            name: players[pid].name,
+            submitted: false,
+            isMe: pid === myPlayerId
+        };
+    });
+    updateScoringProgress();
+    collapseScoringProgress();
 
     const pIds = Object.keys(players);
     const opponents = pIds.filter(id => id !== myPlayerId);
@@ -883,6 +1040,85 @@ function submitScores() {
     send("SUBMIT_SCORES", { scores });
     document.getElementById('btn-submit-scores').innerText = "Waiting...";
     document.getElementById('btn-submit-scores').disabled = true;
+
+    // Update scoring progress for self
+    if (scoringPlayers[myPlayerId]) {
+        scoringPlayers[myPlayerId].submitted = true;
+        if (!scoringSubmittedIds.includes(myPlayerId)) {
+            scoringSubmittedIds.push(myPlayerId);
+        }
+        updateScoringProgress();
+    }
+}
+
+function handleScoringUpdate(payload) {
+    const { player_id, submitted_ids } = payload;
+    scoringSubmittedIds = submitted_ids || [];
+    
+    Object.keys(scoringPlayers).forEach(pid => {
+        scoringPlayers[pid].submitted = scoringSubmittedIds.includes(pid);
+    });
+    
+    updateScoringProgress();
+}
+
+function updateScoringProgress() {
+    const total = Object.keys(scoringPlayers).length;
+    const submitted = scoringSubmittedIds.length;
+    
+    const countEl = document.getElementById('scoring-progress-count');
+    const progressEl = document.getElementById('scoring-progress');
+    const detailsEl = document.getElementById('scoring-progress-details');
+    
+    if (countEl) {
+        countEl.innerText = `${submitted}/${total} submitted`;
+    }
+    
+    if (progressEl) {
+        if (submitted > 0 && submitted < total) {
+            progressEl.classList.add('has-submissions');
+        } else {
+            progressEl.classList.remove('has-submissions');
+        }
+    }
+    
+    // Update details list
+    if (detailsEl) {
+        let html = '';
+        Object.keys(scoringPlayers).forEach(pid => {
+            const p = scoringPlayers[pid];
+            const statusClass = p.submitted ? 'submitted' : 'pending';
+            const icon = p.submitted ? '✓' : '⏳';
+            const nameDisplay = p.isMe ? `${p.name} (You)` : p.name;
+            html += `
+                <div class="scoring-player-status ${statusClass}">
+                    <span class="player-name">${nameDisplay}</span>
+                    <span class="status-icon">${icon}</span>
+                </div>
+            `;
+        });
+        detailsEl.innerHTML = html;
+    }
+}
+
+function toggleScoringProgress() {
+    const progressEl = document.getElementById('scoring-progress');
+    const detailsEl = document.getElementById('scoring-progress-details');
+    
+    if (progressEl && detailsEl) {
+        progressEl.classList.toggle('expanded');
+        detailsEl.classList.toggle('hidden');
+    }
+}
+
+function collapseScoringProgress() {
+    const progressEl = document.getElementById('scoring-progress');
+    const detailsEl = document.getElementById('scoring-progress-details');
+    
+    if (progressEl && detailsEl) {
+        progressEl.classList.remove('expanded');
+        detailsEl.classList.add('hidden');
+    }
 }
 
 function showRoundResults(payload) {
@@ -904,17 +1140,69 @@ function showRoundResults(payload) {
     document.getElementById('btn-submit-scores').disabled = false;
     document.getElementById('btn-submit-scores').innerText = "Submit Scores";
 
-    let html = `<table class="result-table"><thead><tr><th>Player</th><th>Round Score</th><th>Total</th></tr></thead><tbody>`;
+    // Calculate round totals and find winners
+    const roundTotals = {};
     Object.keys(totalScores).forEach(pid => {
-        let rTotal = 0;
-        if (roundScores[pid]) {
-            rTotal = Object.values(roundScores[pid]).reduce((a, b) => a + b, 0);
-        }
+        roundTotals[pid] = roundScores[pid] 
+            ? Object.values(roundScores[pid]).reduce((a, b) => a + b, 0) 
+            : 0;
+    });
+    
+    // Find round winner (highest round score)
+    const roundWinnerId = Object.keys(roundTotals).reduce((a, b) => 
+        roundTotals[a] > roundTotals[b] ? a : b
+    );
+    const roundWinnerScore = roundTotals[roundWinnerId];
+    
+    // Find overall leader (highest cumulative score)
+    const overallLeaderId = Object.keys(totalScores).reduce((a, b) => 
+        totalScores[a] > totalScores[b] ? a : b
+    );
+    const overallLeaderScore = totalScores[overallLeaderId];
+    
+    // Check for ties
+    const roundWinnerCount = Object.values(roundTotals).filter(s => s === roundWinnerScore).length;
+    const overallLeaderCount = Object.values(totalScores).filter(s => s === overallLeaderScore).length;
+
+    let html = `<table class="result-table"><thead><tr><th>Player</th><th>Round</th><th>Total</th></tr></thead><tbody>`;
+    
+    // Sort by total score descending
+    const sortedPids = Object.keys(totalScores).sort((a, b) => totalScores[b] - totalScores[a]);
+    
+    sortedPids.forEach(pid => {
+        const rTotal = roundTotals[pid];
         const name = (window.playersMap && window.playersMap[pid]) ? window.playersMap[pid].name : (pid === myPlayerId ? "You" : "Opponent");
+        
         // Format score with 1 decimal if needed
         const displayRTotal = Number.isInteger(rTotal) ? rTotal : rTotal.toFixed(1);
         const displayTotal = Number.isInteger(totalScores[pid]) ? totalScores[pid] : totalScores[pid].toFixed(1);
-        html += `<tr><td>${name}</td><td>+${displayRTotal}</td><td>${displayTotal}</td></tr>`;
+        
+        // Determine badges
+        let badges = '';
+        
+        // Round winner badge (only if not a tie or if this is the only winner)
+        if (pid === roundWinnerId && roundWinnerScore > 0 && roundWinnerCount === 1) {
+            badges += '<span class="badge badge-round" title="Round Winner">🏆</span>';
+        } else if (roundTotals[pid] === roundWinnerScore && roundWinnerScore > 0 && roundWinnerCount > 1) {
+            badges += '<span class="badge badge-round" title="Tied for Round">🤝</span>';
+        }
+        
+        // Overall leader badge (only if not a tie)
+        if (pid === overallLeaderId && overallLeaderScore > 0 && overallLeaderCount === 1) {
+            badges += '<span class="badge badge-leader" title="Overall Leader">👑</span>';
+        } else if (totalScores[pid] === overallLeaderScore && overallLeaderScore > 0 && overallLeaderCount > 1) {
+            badges += '<span class="badge badge-leader" title="Tied for Lead">⚔️</span>';
+        }
+        
+        const nameWithBadges = badges ? `${name} ${badges}` : name;
+        const roundScoreClass = pid === roundWinnerId && roundWinnerScore > 0 && roundWinnerCount === 1 ? 'highlight-score' : '';
+        const totalScoreClass = pid === overallLeaderId && overallLeaderScore > 0 && overallLeaderCount === 1 ? 'highlight-score' : '';
+        
+        html += `<tr>
+            <td>${nameWithBadges}</td>
+            <td class="${roundScoreClass}">+${displayRTotal}</td>
+            <td class="${totalScoreClass}">${displayTotal}</td>
+        </tr>`;
     });
     html += `</tbody></table>`;
 
@@ -943,11 +1231,33 @@ function showFinalResults(payload) {
     // Clear session since game is over
     clearSession();
 
+    // Sort by score descending
+    const sortedEntries = Object.entries(payload.final_scores).sort((a, b) => b[1] - a[1]);
+    const topScore = sortedEntries[0]?.[1] || 0;
+    const winnerCount = sortedEntries.filter(([, score]) => score === topScore).length;
+
     let html = "";
-    Object.entries(payload.final_scores).forEach(([pid, score]) => {
+    sortedEntries.forEach(([pid, score], index) => {
         const name = (window.playersMap && window.playersMap[pid]) ? window.playersMap[pid].name : "Player";
         const displayScore = Number.isInteger(score) ? score : score.toFixed(1);
-        html += `<div style="text-align:center;">${name}: <span class="final-score-big">${displayScore}</span></div>`;
+        
+        let prefix = '';
+        let extraClass = '';
+        
+        if (score === topScore && topScore > 0) {
+            if (winnerCount === 1) {
+                prefix = '<span class="winner-crown">👑</span> ';
+                extraClass = 'winner-row';
+            } else {
+                prefix = '<span class="winner-crown">🤝</span> ';
+                extraClass = 'tied-row';
+            }
+        }
+        
+        html += `<div class="final-score-row ${extraClass}">
+            <div class="final-name">${prefix}${name}</div>
+            <div class="final-score-big">${displayScore}</div>
+        </div>`;
     });
     document.getElementById('final-scores').innerHTML = html;
 }
@@ -1069,6 +1379,16 @@ window.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Round duration setting
+    const roundDurationSelect = document.getElementById('config-round-duration');
+    if (roundDurationSelect) {
+        roundDurationSelect.addEventListener('change', (e) => {
+            if (isHost) {
+                send("UPDATE_SETTINGS", { round_duration_seconds: parseInt(e.target.value) });
+            }
+        });
+    }
+
     document.getElementById('btn-submit').addEventListener('click', submitAnswers);
     document.getElementById('btn-submit-scores').addEventListener('click', submitScores);
 
@@ -1134,16 +1454,36 @@ window.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // --- SOUND TOGGLE LOGIC ---
+    const soundBtn = document.getElementById('sound-toggle');
+    
+    // Initialize button state from localStorage
+    if (Sound.muted) {
+        soundBtn.innerText = "🔇";
+        soundBtn.classList.add('muted');
+    }
+
+    soundBtn.addEventListener('click', () => {
+        const isMuted = Sound.toggleMute();
+        if (isMuted) {
+            soundBtn.innerText = "🔇";
+            soundBtn.classList.add('muted');
+        } else {
+            soundBtn.innerText = "🔊";
+            soundBtn.classList.remove('muted');
+            // Play a short sound to confirm unmute
+            Sound.tick();
+        }
+    });
+
     // Audio context resume on first interaction
     document.body.addEventListener('click', () => {
         if (Sound.ctx && Sound.ctx.state === 'suspended') Sound.ctx.resume();
     }, { once: true });
 
-    // --- MOBILE VISIBILITY CHANGE (Background tab recovery) ---
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
             if (socket.readyState !== WebSocket.OPEN) {
-                console.log("Tab visible, reconnecting...");
                 connect();
             }
         }
