@@ -1,6 +1,20 @@
 import enum
-from typing import List, Dict, Optional
-from pydantic import BaseModel
+from typing import Annotated, Any, Dict, List, Literal, Optional
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+)
+
+PlayerName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=24),
+]
+AnswerText = Annotated[str, StringConstraints(max_length=64)]
+ScoreValue = Literal[0, 1, 2]
 
 
 class MessageType(str, enum.Enum):
@@ -30,6 +44,7 @@ class MessageType(str, enum.Enum):
     HOST_CHANGED = "HOST_CHANGED"
     SCORING_TIMEOUT = "SCORING_TIMEOUT"
 
+
 class GameState(str, enum.Enum):
     LOBBY = "LOBBY"
     PLAYING = "PLAYING"
@@ -39,25 +54,66 @@ class GameState(str, enum.Enum):
 
 
 class BaseMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: MessageType
-    payload: Optional[Dict] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class JoinGamePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     room_code: Optional[str] = None
-    player_name: str
+    player_name: PlayerName
+    precise_scoring: bool = False
 
 
 class RejoinGamePayload(BaseModel):
-    session_token: str
+    model_config = ConfigDict(extra="forbid")
+
+    session_token: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=128),
+    ]
 
 
 class SubmitAnswersPayload(BaseModel):
-    answers: Dict[str, str]
+    model_config = ConfigDict(extra="forbid")
+
+    answers: Dict[str, AnswerText] = Field(default_factory=dict)
 
 
 class ScorePayload(BaseModel):
-    scores: Dict[str, Dict[str, int]]
+    model_config = ConfigDict(extra="forbid")
+
+    scores: Dict[str, Dict[str, ScoreValue]] = Field(default_factory=dict)
+
+
+class StartGamePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rush_seconds: Optional[int] = Field(default=None, ge=5, le=120)
+    precise_scoring: Optional[bool] = None
+
+
+class UpdateSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rush_seconds: Optional[int] = Field(default=None, ge=5, le=120)
+    precise_scoring: Optional[bool] = None
+    scoring_timeout_seconds: Optional[int] = Field(default=None, ge=0, le=300)
+    round_duration_seconds: Optional[int] = Field(default=None, ge=30, le=120)
+
+    @field_validator("scoring_timeout_seconds")
+    @classmethod
+    def validate_scoring_timeout(cls, value: Optional[int]) -> Optional[int]:
+        if value is not None and 0 < value < 10:
+            raise ValueError("scoring timeout must be zero or at least 10 seconds")
+        return value
+
+
+class EmptyPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class Player(BaseModel):
@@ -69,27 +125,30 @@ class Player(BaseModel):
     is_connected: bool = True
     join_order: int = 0
     disconnect_time: Optional[float] = None
-    current_answers: Dict[str, str] = {}
-    current_round_scores: Dict[str, float] = {}
+    current_answers: Dict[str, str] = Field(default_factory=dict)
+    current_round_scores: Dict[str, float] = Field(default_factory=dict)
 
 
 class Round(BaseModel):
     round_number: int
     letter: str
     categories: List[str]
-    answers: Dict[str, Dict[str, str]] = {}
-    scores: Dict[str, Dict[str, float]] = {}
-    scoring_votes: Dict[str, Dict[str, Dict[str, int]]] = {}
+    answers: Dict[str, Dict[str, str]] = Field(default_factory=dict)
+    scores: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+    scoring_votes: Dict[str, Dict[str, Dict[str, int]]] = Field(default_factory=dict)
 
 
 class Room(BaseModel):
     code: str
-    players: Dict[str, Player] = {}
+    players: Dict[str, Player] = Field(default_factory=dict)
     state: GameState = GameState.LOBBY
     current_round: Optional[Round] = None
-    history: List[Round] = []
-    used_letters: List[str] = []
+    history: List[Round] = Field(default_factory=list)
+    used_letters: List[str] = Field(default_factory=list)
     rush_seconds: int = 5
+    starts_at: float = 0
+    round_deadline: Optional[float] = None
+    # Kept for compatibility with room JSON written by older server versions.
     round_start_time: float = 0
     scoring_deadline: Optional[float] = None
     precise_scoring: bool = False
@@ -114,4 +173,3 @@ class Room(BaseModel):
             return None
         connected.sort(key=lambda p: p.join_order)
         return connected[0]
-
