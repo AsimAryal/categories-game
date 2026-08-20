@@ -57,6 +57,11 @@ async def test_only_host_can_start_or_change_rules(game_manager):
 @pytest.mark.asyncio
 async def test_round_uses_countdown_and_first_submission_shortens_deadline(game_manager):
     room, host, guest = await create_two_player_room(game_manager)
+    await game_manager.update_settings(
+        room.code,
+        host.id,
+        rush_seconds=15,
+    )
     current_round = await game_manager.start_round(
         room.code,
         host.id,
@@ -77,7 +82,7 @@ async def test_round_uses_countdown_and_first_submission_shortens_deadline(game_
     assert result["first_submission"] is True
     assert result["all_submitted"] is False
     assert result["round_deadline"] < original_deadline
-    assert 4 <= result["round_deadline"] - time.time() <= 5.1
+    assert 14 <= result["round_deadline"] - time.time() <= 15.1
 
     with pytest.raises(GameActionError, match="already submitted"):
         await game_manager.submit_answers(room.code, host.id, host_answers)

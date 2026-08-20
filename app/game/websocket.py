@@ -565,22 +565,20 @@ async def _dispatch_message(
         if result["first_submission"]:
             manager.schedule_round_timeout(room.code, result["round_deadline"])
         submitted_ids = result["submitted_ids"]
-        target_ids = [
-            connected_id
-            for connected_id in room.connected_players
-            if connected_id not in submitted_ids
-        ]
         await manager.broadcast(
             {
                 "type": MessageType.OPPONENT_SUBMITTED.value,
                 "payload": {
                     "opponent_id": player_id,
+                    "submitted_by": player_id,
+                    "first_submission": result["first_submission"],
+                    "rush_active": True,
                     "rush_seconds": room.rush_seconds,
                     "round_deadline": room.round_deadline,
                     "submitted_ids": submitted_ids,
                 },
             },
-            target_ids,
+            list(room.connected_players),
         )
         return
 
@@ -895,6 +893,7 @@ def _build_reconnect_state(room, player) -> dict:
                 "total_players": len(connected_ids),
                 "submitted_count": len(connected_ids & set(room.current_round.answers)),
                 "submitted_ids": submitted_ids,
+                "rush_active": bool(submitted_ids),
             }
         )
         if player.id in room.current_round.answers:

@@ -135,6 +135,108 @@ describe('Categories app', () => {
     expect(screen.getByText('B')).toBeInTheDocument()
   })
 
+  it('applies the rush deadline update to the player who submitted', async () => {
+    localStorage.setItem('player_name', 'Sam')
+    render(<App />)
+    const socket = FakeWebSocket.instances[0]
+    const now = Date.now() / 1000
+    const players: Player[] = [
+      { id: 'me', name: 'Sam', score: 0, is_host: true, is_connected: true },
+      { id: 'them', name: 'Riley', score: 0, is_host: false, is_connected: true },
+    ]
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'LOBBY_UPDATE',
+        payload: {
+          room_code: 'RUSH',
+          player_id: 'me',
+          is_host: true,
+          session_token: 'token',
+          players,
+        },
+      })
+      socket.receive({
+        type: 'ROUND_START',
+        payload: {
+          round_number: 1,
+          letter: 'B',
+          categories: ['Animal'],
+          answers: {},
+          scores: {},
+          scoring_votes: {},
+          starts_at: now - 1,
+          round_deadline: now + 60,
+          round_duration_seconds: 60,
+          rush_seconds: 15,
+        },
+      })
+    })
+
+    expect(await screen.findByText('Think fast')).toBeInTheDocument()
+
+    act(() => socket.receive({
+      type: 'OPPONENT_SUBMITTED',
+      payload: {
+        submitted_by: 'me',
+        submitted_ids: ['me'],
+        rush_active: true,
+        rush_seconds: 15,
+        round_deadline: now + 15,
+      },
+    }))
+
+    expect(await screen.findByText('Quick — someone’s in!')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /answers locked in/i })).toBeDisabled()
+  })
+
+  it('restores rush state after reconnecting during a round', async () => {
+    localStorage.setItem('player_name', 'Sam')
+    render(<App />)
+    const socket = FakeWebSocket.instances[0]
+    const now = Date.now() / 1000
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'RECONNECTED',
+        payload: {
+          room_code: 'RUSH',
+          game_state: 'PLAYING',
+          player_id: 'me',
+          is_host: true,
+          session_token: 'token',
+          players: [
+            { id: 'me', name: 'Sam', score: 0, is_host: true, is_connected: true },
+            { id: 'them', name: 'Riley', score: 0, is_host: false, is_connected: true },
+          ],
+          settings: {
+            rush_seconds: 15,
+            precise_scoring: false,
+            scoring_timeout_seconds: 60,
+            round_duration_seconds: 60,
+          },
+          round: {
+            round_number: 1,
+            letter: 'B',
+            categories: ['Animal'],
+            answers: { them: { Animal: 'Bear' } },
+            scores: {},
+            scoring_votes: {},
+          },
+          starts_at: now - 10,
+          round_deadline: now + 12,
+          submitted_ids: ['them'],
+          rush_active: true,
+        },
+      })
+    })
+
+    expect(await screen.findByText('Quick — someone’s in!')).toBeInTheDocument()
+    expect(screen.getByText('1 of 2 submitted')).toBeInTheDocument()
+  })
+
   it('sends an explicit score for every reviewed answer', async () => {
     localStorage.setItem('player_name', 'Sam')
     render(<App />)
@@ -182,6 +284,53 @@ describe('Categories app', () => {
       .reverse()
       .find((message) => message.type === 'SUBMIT_SCORES')
     expect(submitted.payload.scores).toEqual({ Animal: { them: 0 } })
+  })
+
+  it('renders game recap answers in contained player rows', async () => {
+    localStorage.setItem('player_name', 'Sam')
+    render(<App />)
+    const socket = FakeWebSocket.instances[0]
+    const players: Player[] = [
+      { id: 'me', name: 'Sam', score: 10, is_host: true, is_connected: true },
+      { id: 'them', name: 'Riley', score: 8, is_host: false, is_connected: true },
+    ]
+    const round: Round = {
+      round_number: 1,
+      letter: 'A',
+      categories: ['Historical Figure'],
+      answers: {
+        me: { 'Historical Figure': 'A'.repeat(64) },
+        them: { 'Historical Figure': 'Ada Lovelace' },
+      },
+      scores: {},
+      scoring_votes: {},
+    }
+
+    act(() => {
+      socket.open()
+      socket.receive({
+        type: 'LOBBY_UPDATE',
+        payload: {
+          room_code: 'WRAP',
+          player_id: 'me',
+          is_host: true,
+          session_token: 'token',
+          players,
+        },
+      })
+      socket.receive({
+        type: 'GAME_OVER',
+        payload: {
+          history: [round],
+          final_scores: { me: 10, them: 8 },
+        },
+      })
+    })
+
+    expect(await screen.findByText('1 round played')).toBeInTheDocument()
+    expect(document.querySelectorAll('.history-answer')).toHaveLength(2)
+    expect(screen.getByText('A'.repeat(64))).toBeInTheDocument()
+    expect(screen.getByText('Ada Lovelace')).toBeInTheDocument()
   })
 })
 
