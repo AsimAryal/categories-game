@@ -106,14 +106,20 @@ export function useGame() {
     }
 
     if (message.type === 'OPPONENT_SUBMITTED') {
-      setState((current) => ({
-        ...current,
-        rushActive: true,
-        roundDeadline: toMillis(payload.round_deadline) ?? current.roundDeadline,
-        submittedIds: Array.isArray(payload.submitted_ids)
+      setState((current) => {
+        const submittedIds = Array.isArray(payload.submitted_ids)
           ? payload.submitted_ids as string[]
-          : current.submittedIds,
-      }))
+          : current.submittedIds
+        return {
+          ...current,
+          rushActive:
+            typeof payload.rush_active === 'boolean'
+              ? payload.rush_active
+              : submittedIds.length > 0,
+          roundDeadline: toMillis(payload.round_deadline) ?? current.roundDeadline,
+          submittedIds,
+        }
+      })
       navigator.vibrate?.(60)
       return
     }
@@ -175,6 +181,7 @@ export function useGame() {
       setState((current) => {
         const nextScreen = getScreen(payload.game_state)
         const startsAt = toMillis(payload.starts_at)
+        const submittedIds = (payload.submitted_ids ?? []) as string[]
         return {
           ...current,
           screen:
@@ -199,7 +206,10 @@ export function useGame() {
             (typeof payload.scoring_remaining === 'number'
               ? Date.now() + payload.scoring_remaining * 1000
               : null),
-          submittedIds: (payload.submitted_ids ?? []) as string[],
+          submittedIds,
+          rushActive:
+            nextScreen === 'playing' &&
+            (payload.rush_active === true || submittedIds.length > 0),
           scoresSubmitted: Boolean(payload.scores_submitted),
           results:
             nextScreen === 'results'

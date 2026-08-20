@@ -315,7 +315,7 @@ function SettingSelect({
     <label class="setting-row">
       <span><strong>{label}</strong><small>{hint}</small></span>
       <span class="select-wrap">
-        <select value={value} onChange={(event) => onChange(event.currentTarget.value)}>
+        <select value={String(value)} onChange={(event) => onChange(event.currentTarget.value)}>
           {children}
         </select>
         <ChevronDown size={16} />
@@ -526,7 +526,11 @@ function PlayScreen({ game, sound }: { game: GameActions; sound: boolean }) {
   const submitted = Boolean(state.playerId && state.submittedIds.includes(state.playerId))
   const autoSubmittedRef = useRef(false)
   const remaining = Math.max(0, (state.roundDeadline ?? now) - now)
-  const duration = state.settings.round_duration_seconds * 1000
+  const duration = (
+    state.rushActive
+      ? state.settings.rush_seconds
+      : state.settings.round_duration_seconds
+  ) * 1000
   const progress = Math.max(0, Math.min(100, (remaining / duration) * 100))
 
   useEffect(() => {
@@ -777,7 +781,12 @@ function ResultsScreen({ game, onLeave, sound }: { game: GameActions; onLeave: (
                 <h3>{category}</h3>
                 {state.players.map((player) => (
                   <div key={player.id}>
-                    <span><b>{player.name}</b>{round.answers[player.id]?.[category] || 'No answer'}</span>
+                    <span>
+                      <b>{player.name}</b>
+                      <span class="breakdown-answer">
+                        {round.answers[player.id]?.[category] || 'No answer'}
+                      </span>
+                    </span>
                     <strong>{results.round_scores[player.id]?.[category] ?? 0}</strong>
                   </div>
                 ))}
@@ -827,18 +836,38 @@ function FinalScreen({ game }: { game: GameActions }) {
       </section>
 
       <section class="panel history-panel">
-        <div class="section-heading"><div><span class="eyebrow">Game recap</span><h2>{state.history.length} rounds played</h2></div></div>
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">Game recap</span>
+            <h2>
+              {state.history.length} {state.history.length === 1 ? 'round' : 'rounds'} played
+            </h2>
+          </div>
+        </div>
         <div class="history-list">
           {state.history.map((round) => (
             <details key={round.round_number}>
               <summary>
                 <span class="history-letter">{round.letter}</span>
-                <span><strong>Round {round.round_number}</strong><small>{round.categories.join(' · ')}</small></span>
+                <span class="history-summary-copy">
+                  <strong>Round {round.round_number}</strong>
+                  <small>{round.categories.join(' · ')}</small>
+                </span>
                 <ChevronDown size={18} />
               </summary>
-              <div>
+              <div class="history-details">
                 {round.categories.map((category) => (
-                  <p key={category}><b>{category}</b>{state.players.map((player) => round.answers[player.id]?.[category] || '—').join(' · ')}</p>
+                  <section class="history-category" key={category}>
+                    <h3>{category}</h3>
+                    <div class="history-answers">
+                      {state.players.map((player) => (
+                        <p class="history-answer" key={player.id}>
+                          <span>{player.name}</span>
+                          <strong>{round.answers[player.id]?.[category] || '—'}</strong>
+                        </p>
+                      ))}
+                    </div>
+                  </section>
                 ))}
               </div>
             </details>
