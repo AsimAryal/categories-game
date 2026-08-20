@@ -1,0 +1,1 @@
+"""Categories game server package."""

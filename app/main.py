@@ -1,21 +1,30 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
-from app.game.websocket import handle_websocket
 from app.game.manager import game_manager
+from app.game.websocket import handle_websocket
+from app.game.websocket import manager as connection_manager
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await game_manager.initialize()
-    yield
+    connection_manager.start_background_tasks()
+    await connection_manager.restore_deadline_tasks()
+    try:
+        yield
+    finally:
+        await connection_manager.shutdown()
 
 
 app = FastAPI(lifespan=lifespan)
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.websocket("/ws")
@@ -23,21 +32,18 @@ async def websocket_endpoint(websocket: WebSocket):
     await handle_websocket(websocket)
 
 
-@app.get("/")
-async def get():
-    return FileResponse("static/index.html")
-
-
 @app.get("/favicon.ico")
 async def favicon():
-    return FileResponse("favicon.ico")
+    return FileResponse(ROOT_DIR / "favicon.ico")
 
 
-@app.get("/manifest.json")
-async def manifest():
-    return FileResponse("static/manifest.json", media_type="application/manifest+json")
+@app.get("/app-icon.png")
+async def app_icon():
+    return FileResponse(ROOT_DIR / "app_icon.png", media_type="image/png")
 
 
-@app.get("/service-worker.js")
-async def service_worker():
-    return FileResponse("static/service-worker.js", media_type="application/javascript")
+app.mount(
+    "/",
+    StaticFiles(directory=FRONTEND_DIST, html=True, check_dir=False),
+    name="frontend",
+)

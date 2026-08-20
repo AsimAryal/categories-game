@@ -1,27 +1,44 @@
+import asyncio
 import json
 import logging
-import asyncio
+import time
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 
+from .manager import GameActionError, game_manager
 from .models import (
-    MessageType, JoinGamePayload, RejoinGamePayload,
-    SubmitAnswersPayload, ScorePayload, GameState
+    BaseMessage,
+    EmptyPayload,
+    GameState,
+    JoinGamePayload,
+    MessageType,
+    RejoinGamePayload,
+    ScorePayload,
+    StartGamePayload,
+    SubmitAnswersPayload,
+    UpdateSettingsPayload,
 )
-from .manager import game_manager
+from .persistence import game_store
 
 logger = logging.getLogger("uvicorn.error")
 
 
-def log_game_event(room_code: str, event: str, details: str = "", level: str = "info"):
+def log_game_event(
+    room_code: str,
+    event: str,
+    details: str = "",
+    level: str = "info",
+):
     timestamp = datetime.now().strftime("%H:%M:%S")
     room_tag = f"[{room_code}]" if room_code else "[LOBBY]"
     message = f"🎮 {timestamp} {room_tag} {event}"
     if details:
         message += f" | {details}"
-    
+
     if level == "warning":
         logger.warning(message)
     elif level == "error":
@@ -30,7 +47,13 @@ def log_game_event(room_code: str, event: str, details: str = "", level: str = "
         logger.info(message)
 
 
-def log_connection(event: str, ip: str, player_name: str = "", room_code: str = "", details: str = ""):
+def log_connection(
+    event: str,
+    ip: str,
+    player_name: str = "",
+    room_code: str = "",
+    details: str = "",
+):
     timestamp = datetime.now().strftime("%H:%M:%S")
     room_tag = f"[{room_code}]" if room_code else "[---]"
     player_part = f"Player: '{player_name}' | " if player_name else ""
@@ -53,25 +76,34 @@ def get_client_ip(websocket: WebSocket) -> str:
         forwarded = websocket.headers.get("x-forwarded-for")
         if forwarded:
             return forwarded.split(",")[0].strip()
-        # Fall back to direct connection
-        if websocket.client:
-            return websocket.client.host
-        return "unknown"
+        return websocket.client.host if websocket.client else "unknown"
     except Exception:
         return "unknown"
 
 
+@dataclass
+class ConnectionContext:
+    player_id: Optional[str] = None
+    room_code: Optional[str] = None
+    session_token: Optional[str] = None
+    player_name: Optional[str] = None
+
+    def clear(self):
+        self.player_id = None
+        self.room_code = None
+        self.session_token = None
+        self.player_name = None
+
+
 class ConnectionManager:
     def __init__(self):
-        # player_id -> WebSocket
         self.active_connections: Dict[str, WebSocket] = {}
-        # session_token -> player_id (for hijack detection)
         self.session_connections: Dict[str, str] = {}
-        # player_id -> IP address
         self.player_ips: Dict[str, str] = {}
-        # Background task handle
         self._cleanup_task: Optional[asyncio.Task] = None
+        self._round_timeout_tasks: Dict[str, asyncio.Task] = {}
         self._scoring_timeout_tasks: Dict[str, asyncio.Task] = {}
+        self._restore_lock = asyncio.Lock()
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -81,28 +113,31 @@ class ConnectionManager:
         player_id: str,
         session_token: str,
         websocket: WebSocket,
-        ip: str
+        ip: str,
     ) -> Optional[WebSocket]:
-        old_socket = None
-        if session_token in self.session_connections:
-            old_player_id = self.session_connections[session_token]
-            if old_player_id in self.active_connections:
-                old_socket = self.active_connections[old_player_id]
-                # Remove old connection
-                del self.active_connections[old_player_id]
+        old_socket = self.active_connections.get(player_id)
+        old_player_id = self.session_connections.get(session_token)
+        if old_player_id and old_player_id != player_id:
+            old_socket = self.active_connections.get(old_player_id) or old_socket
+            self.active_connections.pop(old_player_id, None)
+            self.player_ips.pop(old_player_id, None)
 
         self.active_connections[player_id] = websocket
         self.session_connections[session_token] = player_id
         self.player_ips[player_id] = ip
-        
-        return old_socket
+        return old_socket if old_socket is not websocket else None
 
-    def disconnect(self, player_id: str):
-        if player_id in self.active_connections:
-            del self.active_connections[player_id]
+    def disconnect(self, player_id: str, websocket: WebSocket) -> bool:
+        """Unregister only if this socket is still the player's active session."""
+        if self.active_connections.get(player_id) is not websocket:
+            return False
 
-    def get_player_ip(self, player_id: str) -> str:
-        return self.player_ips.get(player_id, "unknown")
+        del self.active_connections[player_id]
+        self.player_ips.pop(player_id, None)
+        for token, mapped_player_id in list(self.session_connections.items()):
+            if mapped_player_id == player_id:
+                del self.session_connections[token]
+        return True
 
     async def send_personal_message(self, message: dict, websocket: WebSocket):
         try:
@@ -111,95 +146,161 @@ class ConnectionManager:
             pass
 
     async def send_to_player(self, message: dict, player_id: str):
-        if player_id in self.active_connections:
-            try:
-                await self.active_connections[player_id].send_json(message)
-            except Exception:
-                pass
+        websocket = self.active_connections.get(player_id)
+        if websocket:
+            await self.send_personal_message(message, websocket)
 
     async def broadcast(self, message: dict, player_ids: List[str]):
-        for pid in player_ids:
-            await self.send_to_player(message, pid)
+        for player_id in player_ids:
+            await self.send_to_player(message, player_id)
 
     async def broadcast_games_list(self):
-        rooms = game_manager.get_open_rooms()
         message = {
             "type": MessageType.GAMES_LIST.value,
-            "payload": {"games": rooms}
+            "payload": {"games": game_manager.get_open_rooms()},
         }
-        for socket in self.active_connections.values():
-            try:
-                await socket.send_json(message)
-            except Exception:
-                pass
+        for websocket in list(self.active_connections.values()):
+            await self.send_personal_message(message, websocket)
 
     def start_background_tasks(self):
         if self._cleanup_task is None or self._cleanup_task.done():
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-            log_game_event("", "🧹 Background cleanup task started", "Interval: 30s")
+
+    async def shutdown(self):
+        tasks = [
+            task
+            for task in ([self._cleanup_task] if self._cleanup_task is not None else [])
+            + list(self._round_timeout_tasks.values())
+            + list(self._scoring_timeout_tasks.values())
+            if task is not None
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._cleanup_task = None
+        self._round_timeout_tasks.clear()
+        self._scoring_timeout_tasks.clear()
 
     async def _cleanup_loop(self):
         while True:
             try:
-                await asyncio.sleep(30)  # Check every 30 seconds
+                await asyncio.sleep(30)
                 await game_manager.cleanup_disconnected_players()
+                await game_store.cleanup_old_rooms(exclude_room_codes=list(game_manager.rooms))
             except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Cleanup error: {e}")
+                return
+            except Exception:
+                logger.exception("Background cleanup failed")
 
-    def schedule_scoring_timeout(self, room_code: str, timeout_seconds: int):
-        if room_code in self._scoring_timeout_tasks:
-            self._scoring_timeout_tasks[room_code].cancel()
-        
+    def schedule_round_timeout(self, room_code: str, deadline: float):
+        self.cancel_round_timeout(room_code)
+
         async def timeout_handler():
-            await asyncio.sleep(timeout_seconds)
-            await self._handle_scoring_timeout(room_code)
-        
-        self._scoring_timeout_tasks[room_code] = asyncio.create_task(timeout_handler())
-        log_game_event(room_code, "⏱️ Scoring timeout scheduled", f"{timeout_seconds}s")
+            try:
+                await asyncio.sleep(max(0.0, deadline - time.time()))
+                await self._handle_round_timeout(room_code, deadline)
+            except asyncio.CancelledError:
+                return
+            finally:
+                current = asyncio.current_task()
+                if self._round_timeout_tasks.get(room_code) is current:
+                    del self._round_timeout_tasks[room_code]
 
-    async def _handle_scoring_timeout(self, room_code: str):
-        room = game_manager.rooms.get(room_code)
-        if not room or room.state != GameState.SCORING:
-            return
-        
-        submitted = set(room.current_round.scoring_votes.keys())
-        not_submitted = [
-            room.players[pid].name 
-            for pid in room.connected_players.keys() 
-            if pid not in submitted
-        ]
-        
-        log_game_event(
-            room_code, 
-            "⏰ SCORING TIMEOUT", 
-            f"Missing votes from: {', '.join(not_submitted) if not_submitted else 'none'}",
-            level="warning"
-        )
-        
-        success = await game_manager.force_finalize_scoring(room_code)
-        if success:
-            room = game_manager.rooms.get(room_code)
-            await _broadcast_to_room(room, {
-                "type": MessageType.ROUND_RESULTS.value,
-                "payload": {
-                    "round_scores": {
-                        pid: {cat: float(score) for cat, score in scores.items()}
-                        for pid, scores in room.current_round.scores.items()
-                    },
-                    "cumulative_scores": {
-                        pid: float(p.score) for pid, p in room.players.items()
-                    },
-                    "is_final_round": len(room.history) >= 3,
-                    "timeout": True
-                }
-            })
+        self._round_timeout_tasks[room_code] = asyncio.create_task(timeout_handler())
+
+    def cancel_round_timeout(self, room_code: str):
+        task = self._round_timeout_tasks.pop(room_code, None)
+        if task and task is not asyncio.current_task():
+            task.cancel()
+
+    def schedule_scoring_timeout(self, room_code: str, deadline: float):
+        self.cancel_scoring_timeout(room_code)
+
+        async def timeout_handler():
+            try:
+                await asyncio.sleep(max(0.0, deadline - time.time()))
+                await self._handle_scoring_timeout(room_code, deadline)
+            except asyncio.CancelledError:
+                return
+            finally:
+                current = asyncio.current_task()
+                if self._scoring_timeout_tasks.get(room_code) is current:
+                    del self._scoring_timeout_tasks[room_code]
+
+        self._scoring_timeout_tasks[room_code] = asyncio.create_task(timeout_handler())
 
     def cancel_scoring_timeout(self, room_code: str):
-        if room_code in self._scoring_timeout_tasks:
-            self._scoring_timeout_tasks[room_code].cancel()
-            del self._scoring_timeout_tasks[room_code]
+        task = self._scoring_timeout_tasks.pop(room_code, None)
+        if task and task is not asyncio.current_task():
+            task.cancel()
+
+    async def restore_deadline_tasks(self):
+        """Restore persisted absolute deadlines after startup or first connection."""
+        async with self._restore_lock:
+            for room_code in list(game_manager.rooms):
+                room = game_manager.rooms.get(room_code)
+                if not room:
+                    continue
+
+                if room.state == GameState.PLAYING and room.round_deadline is not None:
+                    if room.round_deadline <= time.time():
+                        await self._handle_round_timeout(
+                            room_code,
+                            room.round_deadline,
+                        )
+                    elif room_code not in self._round_timeout_tasks:
+                        self.schedule_round_timeout(room_code, room.round_deadline)
+
+                room = game_manager.rooms.get(room_code)
+                if room and room.state == GameState.SCORING and room.scoring_deadline is not None:
+                    if room.scoring_deadline <= time.time():
+                        await self._handle_scoring_timeout(
+                            room_code,
+                            room.scoring_deadline,
+                        )
+                    elif room_code not in self._scoring_timeout_tasks:
+                        self.schedule_scoring_timeout(
+                            room_code,
+                            room.scoring_deadline,
+                        )
+
+    async def _handle_round_timeout(self, room_code: str, deadline: float):
+        ended = await game_manager.expire_round(room_code, deadline)
+        if not ended:
+            return
+
+        room = game_manager.rooms.get(room_code)
+        if not room:
+            return
+        log_game_event(room_code, "⏰ ROUND DEADLINE REACHED", level="warning")
+        await _announce_round_ended(room)
+
+    async def _handle_scoring_timeout(self, room_code: str, deadline: float):
+        room = game_manager.rooms.get(room_code)
+        if not room or not room.current_round:
+            return
+
+        submitted_ids = set(room.current_round.scoring_votes)
+        missing_names = [
+            player.name
+            for player_id, player in room.connected_players.items()
+            if player_id not in submitted_ids
+        ]
+        finalized = await game_manager.force_finalize_scoring(room_code, deadline)
+        if not finalized:
+            return
+
+        room = game_manager.rooms.get(room_code)
+        if not room:
+            return
+        log_game_event(
+            room_code,
+            "⏰ SCORING DEADLINE REACHED",
+            f"Missing votes from: {', '.join(missing_names) or 'none'}",
+            level="warning",
+        )
+        await _announce_round_results(room, timeout=True)
 
 
 manager = ConnectionManager()
@@ -208,593 +309,637 @@ manager = ConnectionManager()
 async def handle_websocket(websocket: WebSocket):
     await manager.connect(websocket)
     manager.start_background_tasks()
-    
+    await manager.restore_deadline_tasks()
+
+    context = ConnectionContext()
     client_ip = get_client_ip(websocket)
-    player_id = None
-    room_code = None
-    session_token = None
-    player_name = None
 
     try:
         while True:
-            data = await websocket.receive_text()
+            raw_message = await websocket.receive_text()
             try:
-                msg_dict = json.loads(data)
-                msg_type = msg_dict.get("type")
-                payload = msg_dict.get("payload", {})
-                
-                # --- REJOIN GAME (Reconnection) ---
-                if msg_type == MessageType.REJOIN_GAME.value:
-                    req = RejoinGamePayload(**payload)
-                    session_token = req.session_token
-                    
-                    room, player = await game_manager.rejoin_room(session_token)
-                    
-                    if room and player:
-                        player_id = player.id
-                        room_code = room.code
-                        player_name = player.name
-                        
-                        # Check for session hijack
-                        old_socket = manager.register_player(player_id, session_token, websocket, client_ip)
-                        if old_socket:
-                            log_connection(
-                                "SESSION HIJACKED", client_ip, player_name, room_code, 
-                                "Closing old connection"
-                            )
-                            try:
-                                await manager.send_personal_message({
-                                    "type": MessageType.SESSION_HIJACKED.value,
-                                    "payload": {"message": "Session opened in another tab"}
-                                }, old_socket)
-                                await old_socket.close()
-                            except Exception:
-                                pass
-                        
-                        log_connection(
-                            "♻️ RECONNECTED", client_ip, player_name, room_code,
-                            f"State: {room.state.value}"
-                        )
-                        
-                        # Build full state response based on current game state
-                        state_payload = await _build_reconnect_state(room, player)
-                        
-                        await manager.send_personal_message({
-                            "type": MessageType.RECONNECTED.value,
-                            "payload": state_payload
-                        }, websocket)
-                        
-                        # Notify other players with game state
-                        other_ids = [pid for pid in room.players.keys() if pid != player_id]
-                        reconnect_payload = {
-                            "player_id": player_id,
-                            "player_name": player.name,
-                            "connected_count": len(room.connected_players)
-                        }
-                        # Add submission info if in playing state
-                        if room.state == GameState.PLAYING and room.current_round:
-                            connected_ids = set(room.connected_players.keys())
-                            reconnect_payload["submitted_count"] = len([pid for pid in room.current_round.answers if pid in connected_ids])
-                        
-                        await manager.broadcast({
-                            "type": MessageType.PLAYER_RECONNECTED.value,
-                            "payload": reconnect_payload
-                        }, other_ids)
-                    else:
-                        log_connection(
-                            "❌ RECONNECT FAILED", client_ip, "", "",
-                            "Session expired or room gone"
-                        )
-                        await manager.send_personal_message({
-                            "type": MessageType.ERROR.value,
-                            "payload": {
-                                "message": "Could not reconnect. Session expired.",
-                                "code": "SESSION_EXPIRED"
-                            }
-                        }, websocket)
-                
-                # --- JOIN/HOST GAME ---
-                elif msg_type == MessageType.JOIN_GAME.value:
-                    req = JoinGamePayload(**payload)
-                    player_name = req.player_name
-                    
-                    # Get lobby settings if hosting
-                    precise_scoring = payload.get("precise_scoring", False)
-                    
-                    if req.room_code:
-                        # Joining existing room
-                        room, player = await game_manager.join_room(req.room_code, req.player_name)
-                        if room and player:
-                            log_connection(
-                                "➡️ JOINED ROOM", client_ip, player_name, room.code,
-                                f"Players: {len(room.players)}/5"
-                            )
-                    else:
-                        # Hosting new room
-                        room, player = await game_manager.create_room(
-                            req.player_name,
-                            precise_scoring=precise_scoring
-                        )
-                        if room and player:
-                            log_game_event(
-                                room.code, 
-                                "🏠 ROOM CREATED",
-                                f"Host: '{player_name}' | IP: {client_ip}"
-                            )
-                    
-                    if room and player:
-                        player_id = player.id
-                        room_code = room.code
-                        session_token = player.session_token
-                        
-                        manager.register_player(player_id, session_token, websocket, client_ip)
-                        
-                        # Send lobby update to this player (includes session token)
-                        await manager.send_personal_message({
-                            "type": MessageType.LOBBY_UPDATE.value,
-                            "payload": {
-                                "room_code": room.code,
-                                "is_host": player.is_host,
-                                "session_token": player.session_token,
-                                "players": [_player_to_dict(p) for p in room.players.values()],
-                                "settings": {
-                                    "precise_scoring": room.precise_scoring,
-                                    "rush_seconds": room.rush_seconds,
-                                    "scoring_timeout_seconds": room.scoring_timeout_seconds,
-                                    "round_duration_seconds": room.round_duration_seconds
-                                }
-                            }
-                        }, websocket)
-                        
-                        # Notify others in room
-                        await _broadcast_room_state(room)
-                        
-                        # Update games list for lobby browsers
-                        await manager.broadcast_games_list()
-                    else:
-                        log_connection(
-                            "❌ JOIN FAILED", client_ip, player_name, req.room_code or "NEW",
-                            "Room full or doesn't exist"
-                        )
-                        await manager.send_personal_message({
-                            "type": MessageType.ERROR.value,
-                            "payload": {"message": "Could not join room. Room may be full or not exist."}
-                        }, websocket)
-                
-                # --- GET GAMES LIST ---
-                elif msg_type == MessageType.GET_GAMES.value:
-                    rooms = game_manager.get_open_rooms()
-                    await manager.send_personal_message({
-                        "type": MessageType.GAMES_LIST.value,
-                        "payload": {"games": rooms}
-                    }, websocket)
-                
-                # --- START GAME ---
-                elif msg_type == MessageType.START_GAME.value:
-                    if not room_code:
-                        continue
-                    
-                    rush_sec = payload.get("rush_seconds", 5)
-                    precise = payload.get("precise_scoring")
-                    
-                    try:
-                        rush_sec = int(rush_sec)
-                    except (ValueError, TypeError):
-                        rush_sec = 5
-                    
-                    new_round = await game_manager.start_round(
-                        room_code, 
-                        rush_seconds=rush_sec,
-                        precise_scoring=precise
-                    )
-                    
-                    if new_round:
-                        room = game_manager.rooms[room_code]
-                        player_names = [p.name for p in room.players.values()]
-                        
-                        log_game_event(
-                            room_code,
-                            f"🎬 ROUND {new_round.round_number} STARTED",
-                            f"Letter: {new_round.letter} | Players: {', '.join(player_names)} | Rush: {rush_sec}s | Duration: {room.round_duration_seconds}s"
-                        )
-                        
-                        await _broadcast_to_room(room, {
-                            "type": MessageType.ROUND_START.value,
-                            "payload": {
-                                **new_round.model_dump(),
-                                "rush_seconds": room.rush_seconds,
-                                "round_duration_seconds": room.round_duration_seconds,
-                                "server_time": room.round_start_time,
-                                "total_players": len(room.connected_players)
-                            }
-                        })
-                        await manager.broadcast_games_list()
-                
-                # --- SUBMIT ANSWERS ---
-                elif msg_type == MessageType.SUBMIT_ANSWERS.value:
-                    if not room_code or not player_id:
-                        continue
-                    
-                    req = SubmitAnswersPayload(**payload)
-                    
-                    room = game_manager.rooms.get(room_code)
-                    submitted_before = set(room.current_round.answers.keys()) if room and room.current_round else set()
-                    is_first = len(submitted_before) == 0
-                    
-                    result = await game_manager.submit_answers(room_code, player_id, req.answers)
-                    
-                    # Count non-empty answers
-                    non_empty = sum(1 for v in req.answers.values() if v.strip())
-                    
-                    log_action(
-                        room_code, player_name,
-                        "📝 SUBMITTED ANSWERS" + (" (FIRST! 🏆)" if is_first else ""),
-                        f"Filled: {non_empty}/5"
-                    )
-                    
-                    if result.get("opponent_submitted"):
-                        room = game_manager.rooms[room_code]
-                        submitted_ids = set(room.current_round.answers.keys())
-                        target_ids = [
-                            pid for pid in room.connected_players.keys() 
-                            if pid not in submitted_ids
-                        ]
-                        
-                        if target_ids:
-                            waiting_names = [room.players[pid].name for pid in target_ids]
-                            log_game_event(
-                                room_code,
-                                "⏳ RUSH MODE TRIGGERED",
-                                f"Waiting for: {', '.join(waiting_names)}"
-                            )
-                            
-                            await manager.broadcast({
-                                "type": MessageType.OPPONENT_SUBMITTED.value,
-                                "payload": {
-                                    "opponent_id": player_id,
-                                    "rush_seconds": room.rush_seconds
-                                }
-                            }, target_ids)
-                    
-                    if result.get("all_submitted"):
-                        room = game_manager.rooms[room_code]
-                        
-                        log_game_event(
-                            room_code,
-                            "✅ ALL ANSWERS SUBMITTED",
-                            f"Moving to scoring phase (timed: {room.scoring_timeout_seconds is not None}, timeout: {room.scoring_timeout_seconds}s)"
-                        )
-                        
-                        # Only schedule timeout if timed scoring is enabled
-                        if room.scoring_timeout_seconds:
-                            manager.schedule_scoring_timeout(room_code, room.scoring_timeout_seconds)
-                        
-                        await _broadcast_to_room(room, {
-                            "type": MessageType.ROUND_ENDED.value,
-                            "payload": {
-                                "round": room.current_round.model_dump(),
-                                "players": {pid: _player_to_dict(p) for pid, p in room.players.items()},
-                                "scoring_deadline": room.scoring_deadline,
-                                "scoring_timeout_seconds": room.scoring_timeout_seconds  # None if not timed
-                            }
-                        })
-                
-                # --- SUBMIT SCORES ---
-                elif msg_type == MessageType.SUBMIT_SCORES.value:
-                    if not room_code or not player_id:
-                        continue
-
-                    req = ScorePayload(**payload)
-                    log_action(room_code, player_name, "🗳️ SUBMITTED SCORES")
-
-                    room = game_manager.rooms.get(room_code)
-                    finished = await game_manager.submit_scores(room_code, player_id, req.scores)
-
-                    if not finished and room:
-                        connected_ids = list(room.connected_players.keys())
-                        submitted_ids = list(room.current_round.scoring_votes.keys())
-                        await manager.broadcast({
-                            "type": MessageType.SCORING_UPDATE.value,
-                            "payload": {
-                                "player_id": player_id,
-                                "player_name": player_name,
-                                "submitted_ids": submitted_ids,
-                                "total_players": len(connected_ids)
-                            }
-                        }, [pid for pid in connected_ids if pid != player_id])
-
-                    if finished:
-                        manager.cancel_scoring_timeout(room_code)
-                        room = game_manager.rooms[room_code]
-                        
-                        # Calculate round winner
-                        round_totals = {}
-                        for pid, scores in room.current_round.scores.items():
-                            round_totals[pid] = sum(scores.values())
-                        
-                        if round_totals:
-                            winner_id = max(round_totals, key=round_totals.get)
-                            winner_name = room.players[winner_id].name
-                            winner_score = round_totals[winner_id]
-                            
-                            log_game_event(
-                                room_code,
-                                f"🏁 ROUND {room.current_round.round_number} COMPLETE",
-                                f"Winner: '{winner_name}' (+{winner_score:.1f})"
-                            )
-                        
-                        await _broadcast_to_room(room, {
-                            "type": MessageType.ROUND_RESULTS.value,
-                            "payload": {
-                                "round_scores": {
-                                    pid: {cat: float(score) for cat, score in scores.items()}
-                                    for pid, scores in room.current_round.scores.items()
-                                },
-                                "cumulative_scores": {
-                                    pid: float(p.score) for pid, p in room.players.items()
-                                },
-                                "is_final_round": len(room.history) >= 3
-                            }
-                        })
-                
-                # --- NEXT ROUND ---
-                elif msg_type == MessageType.NEXT_ROUND.value:
-                    if not room_code:
-                        continue
-                    
-                    log_action(room_code, player_name, "▶️ STARTED NEXT ROUND")
-                    
-                    new_round = await game_manager.start_round(room_code)
-                    if new_round:
-                        room = game_manager.rooms[room_code]
-                        
-                        log_game_event(
-                            room_code,
-                            f"🎬 ROUND {new_round.round_number} STARTED",
-                            f"Letter: {new_round.letter}"
-                        )
-                        
-                        await _broadcast_to_room(room, {
-                            "type": MessageType.ROUND_START.value,
-                            "payload": {
-                                **new_round.model_dump(),
-                                "rush_seconds": room.rush_seconds,
-                                "round_duration_seconds": room.round_duration_seconds,
-                                "server_time": room.round_start_time,
-                                "total_players": len(room.connected_players)
-                            }
-                        })
-                
-                # --- END GAME ---
-                elif msg_type == MessageType.END_GAME.value:
-                    if not room_code:
-                        continue
-                    
-                    room = await game_manager.end_game(room_code)
-                    if room:
-                        # Determine overall winner
-                        if room.players:
-                            winner_id = max(room.players, key=lambda pid: room.players[pid].score)
-                            winner = room.players[winner_id]
-                            
-                            log_game_event(
-                                room_code,
-                                "🏆 GAME OVER",
-                                f"Winner: '{winner.name}' with {winner.score:.1f} points!"
-                            )
-                        
-                        await _broadcast_to_room(room, {
-                            "type": MessageType.GAME_OVER.value,
-                            "payload": {
-                                "history": [r.model_dump() for r in room.history],
-                                "final_scores": {
-                                    pid: float(p.score) for pid, p in room.players.items()
-                                }
-                            }
-                        })
-                
-                # --- UPDATE SETTINGS ---
-                elif msg_type == MessageType.UPDATE_SETTINGS.value:
-                    if not room_code:
-                        continue
-                    
-                    rush = payload.get("rush_seconds")
-                    precise = payload.get("precise_scoring")
-                    scoring_timeout = payload.get("scoring_timeout_seconds")
-                    round_duration = payload.get("round_duration_seconds")
-                    
-                    room = await game_manager.update_settings(
-                        room_code,
-                        rush_seconds=int(rush) if rush is not None else None,
-                        precise_scoring=precise if precise is not None else None,
-                        scoring_timeout_seconds=int(scoring_timeout) if scoring_timeout is not None else None,
-                        round_duration_seconds=int(round_duration) if round_duration is not None else None
-                    )
-                    
-                    if room:
-                        log_game_event(
-                            room_code,
-                            "⚙️ SETTINGS UPDATED",
-                            f"Rush: {room.rush_seconds}s | Precise: {room.precise_scoring} | ScoringTimeout: {room.scoring_timeout_seconds} | RoundDuration: {room.round_duration_seconds}s"
-                        )
-                        await _broadcast_room_state(room)
-                
-                # --- LEAVE GAME (intentional exit) ---
-                elif msg_type == MessageType.LEAVE_GAME.value:
-                    if player_id and room_code:
-                        log_connection("🚪 LEFT GAME", client_ip, player_name, room_code)
-                        
-                        room = game_manager.rooms.get(room_code)
-                        player_obj = room.players.get(player_id) if room else None
-                        was_host = player_obj.is_host if player_obj else False
-                        
-                        # Immediately remove (no grace period for intentional leave)
-                        remaining_room = await game_manager.remove_player(player_id)
-                        manager.disconnect(player_id)
-                        
-                        if remaining_room:
-                            if was_host:
-                                new_host = remaining_room.get_next_host()
-                                if new_host:
-                                    new_host.is_host = True
-                                    await game_manager._persist_player(new_host, room_code)
-                                    await game_manager._persist_room(remaining_room)
-                                    
-                                    log_game_event(
-                                        room_code,
-                                        "👑 HOST MIGRATED",
-                                        f"'{player_name}' left → '{new_host.name}'"
-                                    )
-                                    await manager.broadcast({
-                                        "type": MessageType.HOST_CHANGED.value,
-                                        "payload": {
-                                            "new_host_id": new_host.id,
-                                            "new_host_name": new_host.name
-                                        }
-                                    }, list(remaining_room.connected_players.keys()))
-                            
-                            disconnect_payload = {
-                                "player_id": player_id,
-                                "player_name": player_name,
-                                "left_intentionally": True,
-                                "connected_count": len(remaining_room.connected_players)
-                            }
-                            if remaining_room.state == GameState.PLAYING and remaining_room.current_round:
-                                connected_ids = set(remaining_room.connected_players.keys())
-                                disconnect_payload["submitted_count"] = len([pid for pid in remaining_room.current_round.answers if pid in connected_ids])
-                            
-                            await manager.broadcast({
-                                "type": MessageType.PLAYER_DISCONNECTED.value,
-                                "payload": disconnect_payload
-                            }, list(remaining_room.connected_players.keys()))
-                            
-                            await _broadcast_room_state(remaining_room)
-                        
-                        await manager.broadcast_games_list()
-                        
-                        # Reset local state
-                        player_id = None
-                        room_code = None
-                        session_token = None
-                        player_name = None
-                
-            except Exception as e:
-                logger.exception(f"WebSocket Error [{room_code or 'NO_ROOM'}]: {e}")
-    
-    except WebSocketDisconnect:
-        if player_id:
-            manager.disconnect(player_id)
-            
-            # Mark as disconnected (don't remove yet - grace period)
-            room, disconnected, new_host = await game_manager.mark_player_disconnected(player_id)
-            
-            if room and disconnected:
-                log_connection(
-                    "❌ DISCONNECTED", client_ip, player_name or disconnected.name, room.code,
-                    f"State: {room.state.value}"
+                message = BaseMessage.model_validate(json.loads(raw_message))
+            except (json.JSONDecodeError, ValidationError, TypeError):
+                await _send_error(
+                    websocket,
+                    "INVALID_MESSAGE",
+                    "Message must contain a valid type and payload.",
                 )
-                
-                # Notify others about disconnect
-                other_ids = [pid for pid in room.connected_players.keys() if pid != player_id]
-                
-                # Include game state for sync
-                disconnect_payload = {
+                continue
+
+            try:
+                await _dispatch_message(websocket, client_ip, context, message)
+            except ValidationError:
+                await _send_error(
+                    websocket,
+                    "INVALID_PAYLOAD",
+                    f"Invalid payload for {message.type.value}.",
+                )
+            except GameActionError as error:
+                await _send_error(websocket, error.code, error.message)
+            except Exception:
+                logger.exception(
+                    "WebSocket action failed [%s]",
+                    context.room_code or "NO_ROOM",
+                )
+                await _send_error(
+                    websocket,
+                    "INTERNAL_ERROR",
+                    "The server could not process that action.",
+                )
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.exception(
+            "WebSocket connection failed [%s]",
+            context.room_code or "NO_ROOM",
+        )
+    finally:
+        if context.player_id and manager.disconnect(context.player_id, websocket):
+            await _handle_disconnect(context, client_ip)
+
+
+async def _dispatch_message(
+    websocket: WebSocket,
+    client_ip: str,
+    context: ConnectionContext,
+    message: BaseMessage,
+):
+    payload = message.payload
+
+    if message.type == MessageType.REJOIN_GAME:
+        if context.player_id:
+            raise GameActionError(
+                "ALREADY_JOINED",
+                "Leave the current game before joining again.",
+            )
+        request = RejoinGamePayload.model_validate(payload)
+        room, player = await game_manager.rejoin_room(request.session_token)
+        if not room or not player:
+            raise GameActionError(
+                "SESSION_EXPIRED",
+                "Could not reconnect. The session has expired.",
+            )
+
+        context.player_id = player.id
+        context.room_code = room.code
+        context.session_token = player.session_token
+        context.player_name = player.name
+        old_socket = manager.register_player(
+            player.id,
+            player.session_token,
+            websocket,
+            client_ip,
+        )
+        if old_socket:
+            await manager.send_personal_message(
+                {
+                    "type": MessageType.SESSION_HIJACKED.value,
+                    "payload": {"message": "Session opened in another tab."},
+                },
+                old_socket,
+            )
+            try:
+                await old_socket.close()
+            except Exception:
+                pass
+
+        advanced_state = await game_manager.advance_after_roster_change(room.code)
+        log_connection(
+            "♻️ RECONNECTED",
+            client_ip,
+            player.name,
+            room.code,
+            f"State: {room.state.value}",
+        )
+        await manager.send_personal_message(
+            {
+                "type": MessageType.RECONNECTED.value,
+                "payload": _build_reconnect_state(room, player),
+            },
+            websocket,
+        )
+
+        reconnect_payload = {
+            "player_id": player.id,
+            "player_name": player.name,
+            "connected_count": len(room.connected_players),
+        }
+        if room.state == GameState.PLAYING and room.current_round:
+            connected_ids = set(room.connected_players)
+            reconnect_payload["submitted_count"] = len(
+                connected_ids & set(room.current_round.answers)
+            )
+            reconnect_payload["submitted_ids"] = list(room.current_round.answers)
+            reconnect_payload["round_deadline"] = room.round_deadline
+        await manager.broadcast(
+            {
+                "type": MessageType.PLAYER_RECONNECTED.value,
+                "payload": reconnect_payload,
+            },
+            [player_id for player_id in room.connected_players if player_id != player.id],
+        )
+        await _announce_roster_advance(room, advanced_state)
+        return
+
+    if message.type == MessageType.JOIN_GAME:
+        if context.player_id:
+            raise GameActionError(
+                "ALREADY_JOINED",
+                "Leave the current game before joining again.",
+            )
+        request = JoinGamePayload.model_validate(payload)
+        requested_code = request.room_code.strip() if request.room_code else ""
+        if requested_code:
+            room, player = await game_manager.join_room(
+                requested_code,
+                request.player_name,
+            )
+        else:
+            room, player = await game_manager.create_room(
+                request.player_name,
+                precise_scoring=request.precise_scoring,
+            )
+
+        context.player_id = player.id
+        context.room_code = room.code
+        context.session_token = player.session_token
+        context.player_name = player.name
+        manager.register_player(
+            player.id,
+            player.session_token,
+            websocket,
+            client_ip,
+        )
+        log_connection(
+            "➡️ JOINED ROOM",
+            client_ip,
+            player.name,
+            room.code,
+            f"Players: {len(room.players)}/5",
+        )
+        await manager.send_personal_message(
+            {
+                "type": MessageType.LOBBY_UPDATE.value,
+                "payload": {
+                    "room_code": room.code,
+                    "player_id": player.id,
+                    "is_host": player.is_host,
+                    "session_token": player.session_token,
+                    "players": [
+                        _player_to_dict(room_player) for room_player in room.players.values()
+                    ],
+                    "settings": _settings_to_dict(room),
+                },
+            },
+            websocket,
+        )
+        await _broadcast_room_state(room, exclude_player_id=player.id)
+        await manager.broadcast_games_list()
+        return
+
+    if message.type == MessageType.GET_GAMES:
+        EmptyPayload.model_validate(payload)
+        await manager.send_personal_message(
+            {
+                "type": MessageType.GAMES_LIST.value,
+                "payload": {"games": game_manager.get_open_rooms()},
+            },
+            websocket,
+        )
+        return
+
+    room, player_id = _require_joined(context, websocket)
+
+    if message.type == MessageType.START_GAME:
+        request = StartGamePayload.model_validate(payload)
+        new_round = await game_manager.start_round(
+            room.code,
+            player_id,
+            expected_state=GameState.LOBBY,
+            rush_seconds=request.rush_seconds,
+            precise_scoring=request.precise_scoring,
+        )
+        room = game_manager.rooms[room.code]
+        manager.schedule_round_timeout(room.code, room.round_deadline)
+        log_game_event(
+            room.code,
+            f"🎬 ROUND {new_round.round_number} STARTED",
+            f"Letter: {new_round.letter} | Duration: {room.round_duration_seconds}s",
+        )
+        await _broadcast_to_room(room, _round_start_message(room))
+        await manager.broadcast_games_list()
+        return
+
+    if message.type == MessageType.SUBMIT_ANSWERS:
+        request = SubmitAnswersPayload.model_validate(payload)
+        result = await game_manager.submit_answers(
+            room.code,
+            player_id,
+            request.answers,
+        )
+        room = game_manager.rooms[room.code]
+
+        if not result["accepted"]:
+            await _send_error(
+                websocket,
+                result["error_code"],
+                result["error_message"],
+            )
+            if result.get("round_ended"):
+                manager.cancel_round_timeout(room.code)
+                await _announce_round_ended(room)
+            return
+
+        log_action(
+            room.code,
+            context.player_name or "",
+            "📝 SUBMITTED ANSWERS",
+            f"Filled: {sum(bool(value.strip()) for value in request.answers.values())}/5",
+        )
+        if result["all_submitted"]:
+            manager.cancel_round_timeout(room.code)
+            await _announce_round_ended(room)
+            return
+
+        if result["first_submission"]:
+            manager.schedule_round_timeout(room.code, result["round_deadline"])
+        submitted_ids = result["submitted_ids"]
+        target_ids = [
+            connected_id
+            for connected_id in room.connected_players
+            if connected_id not in submitted_ids
+        ]
+        await manager.broadcast(
+            {
+                "type": MessageType.OPPONENT_SUBMITTED.value,
+                "payload": {
+                    "opponent_id": player_id,
+                    "rush_seconds": room.rush_seconds,
+                    "round_deadline": room.round_deadline,
+                    "submitted_ids": submitted_ids,
+                },
+            },
+            target_ids,
+        )
+        return
+
+    if message.type == MessageType.SUBMIT_SCORES:
+        request = ScorePayload.model_validate(payload)
+        result = await game_manager.submit_scores(
+            room.code,
+            player_id,
+            request.scores,
+        )
+        room = game_manager.rooms[room.code]
+
+        if result["timed_out"]:
+            manager.cancel_scoring_timeout(room.code)
+            await _send_error(
+                websocket,
+                "SCORING_CLOSED",
+                "The scoring deadline has passed.",
+            )
+            await _announce_round_results(room, timeout=True)
+            return
+
+        log_action(room.code, context.player_name or "", "🗳️ SUBMITTED SCORES")
+        if result["finished"]:
+            manager.cancel_scoring_timeout(room.code)
+            await _announce_round_results(room)
+            return
+
+        await manager.broadcast(
+            {
+                "type": MessageType.SCORING_UPDATE.value,
+                "payload": {
                     "player_id": player_id,
-                    "player_name": disconnected.name,
-                    "connected_count": len(room.connected_players)
-                }
-                # Add submission info if in playing state
-                if room.state == GameState.PLAYING and room.current_round:
-                    connected_ids = set(room.connected_players.keys())
-                    disconnect_payload["submitted_count"] = len([pid for pid in room.current_round.answers if pid in connected_ids])
-                
-                await manager.broadcast({
-                    "type": MessageType.PLAYER_DISCONNECTED.value,
-                    "payload": disconnect_payload
-                }, other_ids)
-                
-                # Notify about host change
-                if new_host:
-                    log_game_event(
-                        room.code,
-                        "👑 HOST MIGRATED",
-                        f"'{disconnected.name}' → '{new_host.name}'"
-                    )
-                    
-                    await manager.broadcast({
+                    "player_name": context.player_name,
+                    "submitted_ids": result["submitted_ids"],
+                    "total_players": len(room.connected_players),
+                },
+            },
+            [connected_id for connected_id in room.connected_players if connected_id != player_id],
+        )
+        return
+
+    if message.type == MessageType.NEXT_ROUND:
+        EmptyPayload.model_validate(payload)
+        new_round = await game_manager.start_round(
+            room.code,
+            player_id,
+            expected_state=GameState.ROUND_RESULTS,
+        )
+        room = game_manager.rooms[room.code]
+        manager.cancel_scoring_timeout(room.code)
+        manager.schedule_round_timeout(room.code, room.round_deadline)
+        log_action(room.code, context.player_name or "", "▶️ STARTED NEXT ROUND")
+        await _broadcast_to_room(room, _round_start_message(room))
+        return
+
+    if message.type == MessageType.END_GAME:
+        EmptyPayload.model_validate(payload)
+        room = await game_manager.end_game(room.code, player_id)
+        manager.cancel_round_timeout(room.code)
+        manager.cancel_scoring_timeout(room.code)
+        await _broadcast_to_room(
+            room,
+            {
+                "type": MessageType.GAME_OVER.value,
+                "payload": {
+                    "history": [completed_round.model_dump() for completed_round in room.history],
+                    "final_scores": {
+                        room_player_id: float(room_player.score)
+                        for room_player_id, room_player in room.players.items()
+                    },
+                },
+            },
+        )
+        return
+
+    if message.type == MessageType.UPDATE_SETTINGS:
+        request = UpdateSettingsPayload.model_validate(payload)
+        room = await game_manager.update_settings(
+            room.code,
+            player_id,
+            rush_seconds=request.rush_seconds,
+            precise_scoring=request.precise_scoring,
+            scoring_timeout_seconds=request.scoring_timeout_seconds,
+            round_duration_seconds=request.round_duration_seconds,
+        )
+        await _broadcast_room_state(room)
+        return
+
+    if message.type == MessageType.LEAVE_GAME:
+        EmptyPayload.model_validate(payload)
+        old_host_id = room.host_id
+        leaving_player = room.players.get(player_id)
+        leaving_name = leaving_player.name if leaving_player else context.player_name or ""
+        remaining_room = await game_manager.remove_player(player_id)
+        manager.disconnect(player_id, websocket)
+        context.clear()
+        advanced_state = (
+            await game_manager.advance_after_roster_change(remaining_room.code)
+            if remaining_room
+            else None
+        )
+
+        if not remaining_room:
+            manager.cancel_round_timeout(room.code)
+            manager.cancel_scoring_timeout(room.code)
+        else:
+            if old_host_id == player_id and remaining_room.host_id:
+                new_host = remaining_room.players[remaining_room.host_id]
+                await manager.broadcast(
+                    {
                         "type": MessageType.HOST_CHANGED.value,
                         "payload": {
                             "new_host_id": new_host.id,
-                            "new_host_name": new_host.name
-                        }
-                    }, list(room.connected_players.keys()))
-                
-                # Update room state for remaining players
-                await _broadcast_room_state(room)
-            
-            await manager.broadcast_games_list()
-        else:
-            log_connection("❌ DISCONNECTED (no room)", client_ip)
+                            "new_host_name": new_host.name,
+                        },
+                    },
+                    list(remaining_room.connected_players),
+                )
+            await manager.broadcast(
+                {
+                    "type": MessageType.PLAYER_DISCONNECTED.value,
+                    "payload": {
+                        "player_id": player_id,
+                        "player_name": leaving_name,
+                        "left_intentionally": True,
+                        "connected_count": len(remaining_room.connected_players),
+                    },
+                },
+                list(remaining_room.connected_players),
+            )
+            await _announce_roster_advance(remaining_room, advanced_state)
+            await _broadcast_room_state(remaining_room)
+        await manager.broadcast_games_list()
+        return
+
+    raise GameActionError("UNSUPPORTED_ACTION", "That message type is not a client action.")
 
 
-async def _build_reconnect_state(room, player) -> dict:
+def _require_joined(context: ConnectionContext, websocket: WebSocket):
+    if not context.player_id or not context.room_code:
+        raise GameActionError("NOT_JOINED", "Join or reconnect to a game first.")
+    if manager.active_connections.get(context.player_id) is not websocket:
+        raise GameActionError(
+            "SESSION_REPLACED",
+            "This session was replaced by a newer connection.",
+        )
+    room = game_manager.rooms.get(context.room_code)
+    if not room or context.player_id not in room.players:
+        raise GameActionError("SESSION_EXPIRED", "The current game session has expired.")
+    return room, context.player_id
+
+
+async def _handle_disconnect(context: ConnectionContext, client_ip: str):
+    player_id = context.player_id
+    if not player_id:
+        return
+
+    room, disconnected, new_host = await game_manager.mark_player_disconnected(player_id)
+    if not room or not disconnected:
+        return
+    advanced_state = await game_manager.advance_after_roster_change(room.code)
+
+    log_connection(
+        "❌ DISCONNECTED",
+        client_ip,
+        disconnected.name,
+        room.code,
+        f"State: {room.state.value}",
+    )
+    other_ids = [
+        connected_id for connected_id in room.connected_players if connected_id != player_id
+    ]
+    disconnect_payload = {
+        "player_id": player_id,
+        "player_name": disconnected.name,
+        "connected_count": len(room.connected_players),
+    }
+    if room.state == GameState.PLAYING and room.current_round:
+        connected_ids = set(room.connected_players)
+        disconnect_payload["submitted_count"] = len(connected_ids & set(room.current_round.answers))
+        disconnect_payload["submitted_ids"] = list(room.current_round.answers)
+        disconnect_payload["round_deadline"] = room.round_deadline
+    await manager.broadcast(
+        {
+            "type": MessageType.PLAYER_DISCONNECTED.value,
+            "payload": disconnect_payload,
+        },
+        other_ids,
+    )
+
+    if new_host:
+        await manager.broadcast(
+            {
+                "type": MessageType.HOST_CHANGED.value,
+                "payload": {
+                    "new_host_id": new_host.id,
+                    "new_host_name": new_host.name,
+                },
+            },
+            list(room.connected_players),
+        )
+    await _announce_roster_advance(room, advanced_state)
+    await _broadcast_room_state(room)
+    await manager.broadcast_games_list()
+
+
+async def _announce_roster_advance(
+    room,
+    advanced_state: Optional[GameState],
+):
+    if advanced_state == GameState.SCORING:
+        manager.cancel_round_timeout(room.code)
+        await _announce_round_ended(room)
+    elif advanced_state == GameState.ROUND_RESULTS:
+        manager.cancel_scoring_timeout(room.code)
+        await _announce_round_results(room)
+
+
+async def _send_error(
+    websocket: WebSocket,
+    code: str,
+    message: str,
+):
+    await manager.send_personal_message(
+        {
+            "type": MessageType.ERROR.value,
+            "payload": {"code": code, "message": message},
+        },
+        websocket,
+    )
+
+
+def _round_start_message(room) -> dict:
+    return {
+        "type": MessageType.ROUND_START.value,
+        "payload": {
+            **room.current_round.model_dump(),
+            "rush_seconds": room.rush_seconds,
+            "round_duration_seconds": room.round_duration_seconds,
+            "server_time": time.time(),
+            "starts_at": room.starts_at,
+            "round_deadline": room.round_deadline,
+            "total_players": len(room.connected_players),
+        },
+    }
+
+
+async def _announce_round_ended(room):
+    if room.scoring_deadline is not None:
+        manager.schedule_scoring_timeout(room.code, room.scoring_deadline)
+    await _broadcast_to_room(
+        room,
+        {
+            "type": MessageType.ROUND_ENDED.value,
+            "payload": {
+                "round": room.current_round.model_dump(),
+                "players": {
+                    player_id: _player_to_dict(player) for player_id, player in room.players.items()
+                },
+                "scoring_deadline": room.scoring_deadline,
+                "scoring_timeout_seconds": room.scoring_timeout_seconds,
+            },
+        },
+    )
+
+
+async def _announce_round_results(room, timeout: bool = False):
+    payload = {
+        "round_scores": {
+            player_id: {category: float(score) for category, score in category_scores.items()}
+            for player_id, category_scores in room.current_round.scores.items()
+        },
+        "cumulative_scores": {
+            player_id: float(player.score) for player_id, player in room.players.items()
+        },
+        "is_final_round": len(room.history) >= 3,
+    }
+    if timeout:
+        payload["timeout"] = True
+    await _broadcast_to_room(
+        room,
+        {
+            "type": MessageType.ROUND_RESULTS.value,
+            "payload": payload,
+        },
+    )
+
+
+def _build_reconnect_state(room, player) -> dict:
     base_state = {
         "room_code": room.code,
         "game_state": room.state.value,
         "is_host": player.is_host,
         "player_id": player.id,
         "session_token": player.session_token,
-        "players": [_player_to_dict(p) for p in room.players.values()],
-        "settings": {
-            "rush_seconds": room.rush_seconds,
-            "precise_scoring": room.precise_scoring,
-            "scoring_timeout_seconds": room.scoring_timeout_seconds,
-            "round_duration_seconds": room.round_duration_seconds
-        }
+        "players": [_player_to_dict(room_player) for room_player in room.players.values()],
+        "settings": _settings_to_dict(room),
+        "starts_at": room.starts_at or None,
+        "round_deadline": room.round_deadline,
+        "scoring_deadline": room.scoring_deadline,
     }
-    
-    # Include state-specific data
-    if room.state == GameState.LOBBY:
-        pass  # Base state is enough
-    
-    elif room.state == GameState.PLAYING:
-        if room.current_round:
-            base_state["round"] = room.current_round.model_dump()
-            base_state["remaining_time"] = game_manager.get_remaining_time(room.code)
-            base_state["round_duration_seconds"] = room.round_duration_seconds
-            connected_ids = set(room.connected_players.keys())
-            base_state["total_players"] = len(connected_ids)
-            base_state["submitted_count"] = len([pid for pid in room.current_round.answers if pid in connected_ids])
-            # Include player's own submitted answers if any
-            if player.id in room.current_round.answers:
-                base_state["my_answers"] = room.current_round.answers[player.id]
-    
-    elif room.state == GameState.SCORING:
-        if room.current_round:
-            base_state["round"] = room.current_round.model_dump()
-            base_state["scoring_remaining"] = game_manager.get_scoring_remaining_time(room.code)
-            # Include if player already submitted scores
-            base_state["scores_submitted"] = player.id in room.current_round.scoring_votes
-            # Include scoring_timeout_seconds for timer display
-            base_state["scoring_timeout_seconds"] = room.scoring_timeout_seconds
-    
-    elif room.state == GameState.ROUND_RESULTS:
-        if room.current_round:
-            base_state["round_scores"] = {
-                pid: {cat: float(score) for cat, score in scores.items()}
-                for pid, scores in room.current_round.scores.items()
+
+    if room.state == GameState.PLAYING and room.current_round:
+        connected_ids = set(room.connected_players)
+        submitted_ids = list(room.current_round.answers)
+        base_state.update(
+            {
+                "round": room.current_round.model_dump(),
+                "remaining_time": game_manager.get_remaining_time(room.code),
+                "round_duration_seconds": room.round_duration_seconds,
+                "total_players": len(connected_ids),
+                "submitted_count": len(connected_ids & set(room.current_round.answers)),
+                "submitted_ids": submitted_ids,
             }
-            base_state["cumulative_scores"] = {
-                pid: float(p.score) for pid, p in room.players.items()
+        )
+        if player.id in room.current_round.answers:
+            base_state["my_answers"] = room.current_round.answers[player.id]
+
+    elif room.state == GameState.SCORING and room.current_round:
+        base_state.update(
+            {
+                "round": room.current_round.model_dump(),
+                "scoring_remaining": game_manager.get_scoring_remaining_time(room.code),
+                "scores_submitted": (player.id in room.current_round.scoring_votes),
+                "scoring_timeout_seconds": room.scoring_timeout_seconds,
+                "submitted_ids": list(room.current_round.scoring_votes),
+                "answer_submitted_ids": list(room.current_round.answers),
             }
-            base_state["is_final_round"] = len(room.history) >= 3
-    
+        )
+
+    elif room.state == GameState.ROUND_RESULTS and room.current_round:
+        base_state.update(
+            {
+                "round_scores": {
+                    player_id: {
+                        category: float(score) for category, score in category_scores.items()
+                    }
+                    for player_id, category_scores in room.current_round.scores.items()
+                },
+                "cumulative_scores": {
+                    player_id: float(room_player.score)
+                    for player_id, room_player in room.players.items()
+                },
+                "is_final_round": len(room.history) >= 3,
+            }
+        )
+
     elif room.state == GameState.FINAL_RESULTS:
-        base_state["history"] = [r.model_dump() for r in room.history]
-        base_state["final_scores"] = {
-            pid: float(p.score) for pid, p in room.players.items()
-        }
-    
+        base_state.update(
+            {
+                "history": [completed_round.model_dump() for completed_round in room.history],
+                "final_scores": {
+                    player_id: float(room_player.score)
+                    for player_id, room_player in room.players.items()
+                },
+            }
+        )
+
     return base_state
 
 
@@ -804,26 +949,35 @@ def _player_to_dict(player) -> dict:
         "name": player.name,
         "score": float(player.score),
         "is_host": player.is_host,
-        "is_connected": player.is_connected
+        "is_connected": player.is_connected,
+    }
+
+
+def _settings_to_dict(room) -> dict:
+    return {
+        "precise_scoring": room.precise_scoring,
+        "rush_seconds": room.rush_seconds,
+        "scoring_timeout_seconds": room.scoring_timeout_seconds,
+        "round_duration_seconds": room.round_duration_seconds,
     }
 
 
 async def _broadcast_to_room(room, message):
-    player_ids = list(room.connected_players.keys())
-    await manager.broadcast(message, player_ids)
+    await manager.broadcast(message, list(room.connected_players))
 
 
-async def _broadcast_room_state(room):
-    await _broadcast_to_room(room, {
-        "type": MessageType.LOBBY_UPDATE.value,
-        "payload": {
-            "room_code": room.code,
-            "players": [_player_to_dict(p) for p in room.players.values()],
-            "settings": {
-                "precise_scoring": room.precise_scoring,
-                "rush_seconds": room.rush_seconds,
-                "scoring_timeout_seconds": room.scoring_timeout_seconds,
-                "round_duration_seconds": room.round_duration_seconds
-            }
-        }
-    })
+async def _broadcast_room_state(room, exclude_player_id: Optional[str] = None):
+    player_ids = [
+        player_id for player_id in room.connected_players if player_id != exclude_player_id
+    ]
+    await manager.broadcast(
+        {
+            "type": MessageType.LOBBY_UPDATE.value,
+            "payload": {
+                "room_code": room.code,
+                "players": [_player_to_dict(player) for player in room.players.values()],
+                "settings": _settings_to_dict(room),
+            },
+        },
+        player_ids,
+    )
